@@ -1,5 +1,18 @@
+PYTHON ?= python
+
+.PHONY: lab-fund-nav lab-fund-nav-holdings lab-data-sources service-fund-nav test-service-fund-nav
+
 lab-fund-nav:
-	python labs/fund_nav_rt_022485/main.py
+	$(PYTHON) labs/fund_nav_rt_022485/main.py
+
+lab-fund-nav-holdings:
+	$(PYTHON) labs/fund_nav_multi_rt_holdings_20260202/main.py
+
+lab-data-sources:
+	$(PYTHON) labs/fund_nav_data_sources_20260202/main.py
 
 service-fund-nav:
-	uvicorn services/fund-nav/app.main:app --reload
+	uvicorn services.fund_nav.app.main:app --reload
+
+test-service-fund-nav:
+	python -m pytest services/fund_nav/tests

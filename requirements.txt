@@ -1,0 +1,11 @@
+akshare
+pandas
+numpy
+scikit-learn
+fastapi
+uvicorn
+pydantic
+pytest
+httpx
+python-multipart
+python-dotenv

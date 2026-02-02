@@ -1,0 +1,28 @@
+[project]
+name = "u0"
+version = "0.1.0"
+description = "Fund NAV estimation experiments and platform"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "PolyForm Noncommercial License 1.0.0" }
+
+[project.optional-dependencies]
+lab = [
+  "akshare",
+  "pandas",
+  "numpy",
+  "scikit-learn",
+  "fastapi",
+  "uvicorn",
+]
+dev = [
+  "pytest",
+  "httpx",
+]
+
+[tool.black]
+line-length = 100
+
+[tool.isort]
+profile = "black"
+line_length = 100
