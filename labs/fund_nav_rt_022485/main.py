@@ -17,6 +17,20 @@ FACTOR_INDEX = {
 LOOKBACK_DAYS = 90  # 回归窗口
 SLEEP_SEC = 60      # 盘中每分钟刷新一次
 
+def is_cn_market_open(ts: pd.Timestamp) -> bool:
+    """
+    A股交易时段（北京时间）：09:30-11:30, 13:00-15:00
+    """
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("Asia/Shanghai")
+    else:
+        ts = ts.tz_convert("Asia/Shanghai")
+
+    t = ts.time()
+    am_open = t >= pd.Timestamp("09:30").time() and t <= pd.Timestamp("11:30").time()
+    pm_open = t >= pd.Timestamp("13:00").time() and t <= pd.Timestamp("15:00").time()
+    return am_open or pm_open
+
 def get_fund_nav_daily(symbol: str) -> pd.DataFrame:
     """
     取基金日频单位净值走势，并生成日收益率
@@ -73,28 +87,48 @@ def fit_factor_model(fund_df: pd.DataFrame) -> tuple[LinearRegression, list[str]
 
     为了让你现在就跑起来，我先用 B：走一个常见的东财指数历史日频接口（若你版本不支持，下面会抛出提示，你再告诉我我帮你换接口名）
     """
-    # === 尝试拉取指数日频（接口名可能随版本变化；失败会提示） ===
+    # === 稳定优先：指数日频走 index_zh_a_hist（文档长期存在），失败再 fallback ===
     idx_rets = []
     dates = None
+    end_date = pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y%m%d")
+    start_date = (
+        (pd.Timestamp.now(tz="Asia/Shanghai") - pd.Timedelta(days=LOOKBACK_DAYS + 60))
+        .strftime("%Y%m%d")
+    )
 
-    for name, code in FACTOR_INDEX.items():
-        # 常见可用接口之一（不同 akshare 版本名字可能略变）
-        # 这里采用 “index_zh_a_hist” / “stock_zh_index_daily_em” 等都可能存在
+    def normalize_index_symbol(code: str) -> str:
+        if code.startswith(("sh", "sz", "SH", "SZ")):
+            return code[2:]
+        return code
+
+    def fetch_index_hist(code: str) -> pd.DataFrame:
         hist = None
         err = None
-        for fn in ["stock_zh_index_daily_em", "index_zh_a_hist"]:
-            if hasattr(ak, fn):
-                try:
-                    hist = getattr(ak, fn)(symbol=code)
-                    break
-                except Exception as e:
-                    err = e
+        if hasattr(ak, "index_zh_a_hist"):
+            try:
+                hist = ak.index_zh_a_hist(
+                    symbol=normalize_index_symbol(code),
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            except Exception as e:
+                err = e
+        if hist is None and hasattr(ak, "stock_zh_index_daily_em"):
+            try:
+                hist = ak.stock_zh_index_daily_em(symbol=code)
+            except Exception as e:
+                err = e
         if hist is None:
             raise RuntimeError(
-                f"你当前 akshare 版本找不到可用的指数日频接口（尝试了 stock_zh_index_daily_em / index_zh_a_hist）。"
+                "你当前 akshare 版本找不到可用的指数日频接口（尝试了 index_zh_a_hist / stock_zh_index_daily_em）。"
                 f"报错示例：{err}\n"
-                f"解决：你把 `dir(ak)` 里包含 'index' 的函数名贴我，我给你换成你版本可用的。"
+                "解决：你把 `dir(ak)` 里包含 'index' 的函数名贴我，我给你换成你版本可用的。"
             )
+        return hist
+
+    for name, code in FACTOR_INDEX.items():
+        hist = fetch_index_hist(code)
 
         hist = hist.copy()
         hist.columns = [c.strip() for c in hist.columns]
@@ -146,16 +180,38 @@ def estimate_intraday_nav(fund_df: pd.DataFrame, model: LinearRegression, featur
             missing.append(code)
 
     x = np.array(x).reshape(1, -1)
-    est_ret = float(model.predict(x)[0])  # 估算今日相对“昨日净值”的涨跌
+    missing_all = len(missing) == len(FACTOR_INDEX)
+    if missing_all:
+        est_ret = float(model.intercept_)  # 无因子数据时退化为 alpha
+        return_source = "alpha_only"
+    else:
+        est_ret = float(model.predict(x)[0])  # 估算今日相对“昨日净值”的涨跌
+        return_source = "factor_intraday"
+
     est_nav = last_nav * (1.0 + est_ret)
+
+    sorted_betas = dict(
+        sorted(
+            zip(features, model.coef_.tolist()),
+            key=lambda kv: abs(kv[1]),
+            reverse=True,
+        )
+    )
+    dominant_factor = next(iter(sorted_betas), None)
+
+    now = pd.Timestamp.now(tz="Asia/Shanghai")
+    market_status = "closed" if (missing_all or not is_cn_market_open(now)) else "open"
 
     return {
         "fund": FUND_CODE,
         "last_official_nav": last_nav,
         "estimated_return": est_ret,
+        "return_source": return_source,
         "estimated_nav": est_nav,
+        "market_status": market_status,
         "missing_index_codes": missing,
-        "betas": dict(zip(features, model.coef_.tolist())),
+        "betas": sorted_betas,
+        "dominant_factor": dominant_factor,
         "alpha": float(model.intercept_),
     }
 
