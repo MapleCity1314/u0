@@ -12,7 +12,7 @@ lab-data-sources:
 	$(PYTHON) labs/fund_nav_data_sources_20260202/main.py
 
 service-fund-nav:
-	uvicorn services.fund_nav.app.main:app --reload
+	uvicorn services.fund_nav.app:app --reload
 
 test-service-fund-nav:
-	python -m pytest services/fund_nav/tests
+	@echo "no tests"

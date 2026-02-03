@@ -1,71 +1,25 @@
-# fund_nav service
+# fund_nav 模块
 
-FastAPI backend for fund NAV estimation and watchlists.
+基金净值估算与搜索相关接口模块（仅基金相关功能）。
 
-## Run
+## 运行（独立）
 ```bash
-export FUND_NAV_INITIAL_INVITE_CODE=YOUR_CODE
-make service-fund-nav
+python -m services.fund_nav.app
 ```
 
-## API quickstart (curl)
+## 接口快速开始（curl）
 
-### 1) Register with invite code
-```bash
-curl -X POST http://127.0.0.1:8000/api/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"invite_code":"YOUR_CODE","name":"demo"}'
-```
-
-Response:
-```json
-{"ok":true,"data":{"token":"...","user_id":"..."}}
-```
-
-### 2) Create invite code (needs token)
-```bash
-curl -X POST http://127.0.0.1:8000/api/auth/invites \
-  -H 'Authorization: Bearer YOUR_TOKEN' \
-  -H 'Content-Type: application/json' \
-  -d '{"max_uses": 3}'
-```
-
-### 3) Search funds
+### 1) 搜索基金
 ```bash
 curl "http://127.0.0.1:8000/api/funds/search?q=AI"
 ```
 
-### 4) Fund detail / estimate
+### 2) 基金估值详情
 ```bash
-curl "http://127.0.0.1:8000/api/funds/022485?index_code=000510"
+curl "http://127.0.0.1:8000/api/funds/022485?index_code=000510&source=auto"
 ```
 
-### 5) Watchlist
-```bash
-curl -X POST http://127.0.0.1:8000/api/watchlist/022485 \
-  -H 'Authorization: Bearer YOUR_TOKEN'
-
-curl http://127.0.0.1:8000/api/watchlist/ \
-  -H 'Authorization: Bearer YOUR_TOKEN'
-
-curl -X DELETE http://127.0.0.1:8000/api/watchlist/022485 \
-  -H 'Authorization: Bearer YOUR_TOKEN'
-```
-
-### 6) Portfolio summary
-```bash
-curl http://127.0.0.1:8000/api/portfolio/summary \
-  -H 'Authorization: Bearer YOUR_TOKEN'
-```
-
-### 7) Update position
-```bash
-curl -X PUT http://127.0.0.1:8000/api/positions/022485 \
-  -H 'Authorization: Bearer YOUR_TOKEN' \
-  -H 'Content-Type: application/json' \
-  -d '{\"units\": 500}'
-```
-
-## Notes
-- Data source: AkShare (Eastmoney estimate + holdings/industry/index fallback).
-- Storage default: SQLite (set `FUND_NAV_STORE_BACKEND=memory` to disable persistence).
+## 说明
+- 数据来源：AkShare（东财估值 + 持仓/行业/指数兜底）。
+- 可选参数 `source`：`auto`/`eastmoney`/`model`/`both`，返回对应估值并同时包含两套结果字段。
+- 缓存：由 `services/modules/akshare` 提供，默认 `AKSHARE_CACHE_TTL_SEC=30`。

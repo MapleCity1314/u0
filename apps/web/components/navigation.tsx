@@ -39,13 +39,9 @@ export default function AppNavigation({
         >
           <Link
             href="/profile"
-            className="relative flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-transparent bg-zinc-900 text-white transition hover:border-orange-300 dark:bg-zinc-100 dark:text-zinc-900"
+            className="relative flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-transparent transition hover:border-orange-300"
           >
-            {user?.avatarUrl ? (
-              <img src={user.avatarUrl} alt="avatar" className="h-full w-full object-cover" />
-            ) : (
-              <span className="text-xs font-semibold">{initials}</span>
-            )}
+            <img src="/logo.jpg" alt="Logo" className="h-full w-full object-contain" />
           </Link>
 
           <div className="h-px w-8 bg-zinc-200 dark:bg-zinc-800" />

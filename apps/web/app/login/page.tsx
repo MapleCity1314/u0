@@ -79,10 +79,14 @@ export default function LoginPage() {
         className="relative z-10 w-full max-w-[440px]"
       >
         <div className="mb-10 flex flex-col items-center text-center">
-          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-[22px] bg-zinc-900 text-xl font-black text-white shadow-2xl dark:bg-white dark:text-zinc-900">
-            NAV
+          <div className="mb-4 flex h-16 w-16 items-center justify-center">
+            <img
+              src="/logo.jpg"
+              alt="Logo"
+              className="h-16 w-16 rounded-[22px] object-contain shadow-2xl"
+            />
           </div>
-          <p className="text-[10px] uppercase tracking-[0.5em] text-zinc-400">Quantitative Lab</p>
+          <p className="text-[10px] uppercase tracking-[0.5em] text-zinc-400">u0 Lab</p>
           <h1 className="mt-2 text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
             {mode === "login" ? "欢迎回来" : "加入我们"}
           </h1>
@@ -213,7 +217,7 @@ export default function LoginPage() {
 
       <div className="absolute bottom-8 text-center">
         <p className="text-[10px] font-medium tracking-widest text-zinc-300 dark:text-zinc-800">
-          POWERED BY AKSHARE ENGINE / SECURE ACCESS LAYER
+          POWERED BY PRESTO / SECURE ACCESS LAYER
         </p>
       </div>
     </div>
