@@ -4,3 +4,5 @@ u0-venv/*
 # Agent Skills
 .agents/*
 .codex/*
+
+.env
