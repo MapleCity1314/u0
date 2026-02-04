@@ -8,11 +8,13 @@ import { cn } from "@/lib/utils"
 
 interface AnimatedThemeTogglerProps extends React.ComponentPropsWithoutRef<"button"> {
   duration?: number
+  iconSize?: number
 }
 
 export const AnimatedThemeToggler = ({
   className,
   duration = 400,
+  iconSize = 20,
   ...props
 }: AnimatedThemeTogglerProps) => {
   const [isDark, setIsDark] = useState(false)
@@ -36,6 +38,17 @@ export const AnimatedThemeToggler = ({
 
   const toggleTheme = useCallback(async () => {
     if (!buttonRef.current) return
+
+    if (
+      typeof document.startViewTransition !== "function" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      const newTheme = !isDark
+      setIsDark(newTheme)
+      document.documentElement.classList.toggle("dark")
+      localStorage.setItem("theme", newTheme ? "dark" : "light")
+      return
+    }
 
     await document.startViewTransition(() => {
       flushSync(() => {
@@ -74,10 +87,10 @@ export const AnimatedThemeToggler = ({
     <button
       ref={buttonRef}
       onClick={toggleTheme}
-      className={cn(className)}
+      className={cn("relative outline-none", className)}
       {...props}
     >
-      {isDark ? <Sun /> : <Moon />}
+      {isDark ? <Sun size={iconSize} /> : <Moon size={iconSize} />}
       <span className="sr-only">Toggle theme</span>
     </button>
   )

@@ -1,72 +1,144 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  ArrowRight,
+  Loader2,
+  Lock,
+  ShieldCheck,
+  Smile,
+  Ticket,
+  User,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Lock, User, Ticket, Smile, ArrowRight, Loader2, ShieldCheck } from "lucide-react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
 
-import { api } from "@/lib/api-client";
-import { getAuthToken, setAuthToken } from "@/lib/auth-cookie";
-import { useUserStore } from "@/lib/user-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/auth";
+
+const LoginSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("login"),
+    username: z.string().min(1, "Username is required."),
+    password: z.string().min(1, "Password is required."),
+    inviteCode: z.string().optional(),
+    displayName: z.string().optional(),
+  }),
+  z.object({
+    mode: z.literal("register"),
+    username: z.string().min(1, "Username is required."),
+    password: z.string().min(6, "Password must be at least 6 characters."),
+    inviteCode: z.string().min(1, "Invite code is required."),
+    displayName: z.string().optional(),
+  }),
+]);
+
+type LoginFormValues = z.infer<typeof LoginSchema>;
+
+const mapAuthError = (code?: string) => {
+  switch (code) {
+    case "invalid_invite":
+      return "Invalid invite code.";
+    case "invite_used":
+      return "Invite code already used.";
+    case "username_exists":
+      return "Username already exists.";
+    case "invalid_credentials":
+      return "Invalid username or password.";
+    case "account_locked":
+      return "Account locked. Try again later.";
+    default:
+      return "Authentication failed. Please try again.";
+  }
+};
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<"login" | "register">("login");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [inviteCode, setInviteCode] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const setUser = useUserStore((state) => state.setUser);
+  const setUser = useAuthStore((state) => state.setUser);
+  const [serverError, setServerError] = useState<string | null>(null);
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setError(null);
-    if (!username.trim() || !password.trim()) {
-      setError("请输入用户名与密码");
-      return;
-    }
-    if (mode === "register" && !inviteCode.trim()) {
-      setError("请输入邀请码");
-      return;
-    }
-    setLoading(true);
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    watch,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginFormValues>({
+    resolver: zodResolver(LoginSchema),
+    defaultValues: {
+      mode: "login",
+      username: "",
+      password: "",
+      inviteCode: "",
+      displayName: "",
+    },
+  });
 
-    const res =
-      mode === "register"
-        ? await api.register(
-            inviteCode.trim(),
-            username.trim(),
-            password.trim(),
-            displayName.trim() || undefined
-          )
-        : await api.login(username.trim(), password.trim());
+  const mode = watch("mode");
 
-    if (!res.ok || !res.data) {
-      setError(res.error?.message || "操作失败");
-      setLoading(false);
-      return;
-    }
-    setAuthToken(res.data.token);
-    setUser({
-      name: res.data.name,
-      username: res.data.username,
-      avatarUrl: res.data.avatar_url,
-      mustChangePassword: res.data.must_change_password,
+  const onSubmit = async (values: LoginFormValues) => {
+    setServerError(null);
+    const endpoint = values.mode === "register" ? "/api/auth/register" : "/api/auth/login";
+    const payload =
+      values.mode === "register"
+        ? {
+            inviteCode: values.inviteCode,
+            username: values.username.trim(),
+            password: values.password.trim(),
+          }
+        : {
+            username: values.username.trim(),
+            password: values.password.trim(),
+          };
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
-    router.push(res.data.must_change_password ? "/profile" : "/dashboard");
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data?.ok || !data?.user) {
+      setServerError(mapAuthError(data?.error));
+      return;
+    }
+
+    const user = data.user;
+    setUser({
+      id: String(user.id ?? ""),
+      displayId: user.display_id ?? user.displayId ?? "",
+      username: user.username ?? "",
+      status: user.status,
+    });
+
+    router.push("/dashboard");
   };
 
   useEffect(() => {
-    const token = getAuthToken();
-    if (token) {
+    let mounted = true;
+    const checkSession = async () => {
+      const response = await fetch("/api/auth/session");
+      const data = await response.json().catch(() => null);
+      if (!mounted || !data?.authenticated || !data?.user) return;
+      const user = data.user;
+      setUser({
+        id: String(user.id ?? ""),
+        displayId: user.display_id ?? user.displayId ?? "",
+        username: user.username ?? "",
+        status: user.status,
+      });
       router.push("/dashboard");
-    }
-  }, [router]);
+    };
+    checkSession();
+    return () => {
+      mounted = false;
+    };
+  }, [router, setUser]);
 
   return (
     <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-zinc-50 px-6 transition-colors duration-500 dark:bg-zinc-950">
@@ -88,7 +160,7 @@ export default function LoginPage() {
           </div>
           <p className="text-[10px] uppercase tracking-[0.5em] text-zinc-400">u0 Lab</p>
           <h1 className="mt-2 text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
-            {mode === "login" ? "欢迎回来" : "加入我们"}
+            {mode === "login" ? "娆㈣繋鍥炴潵" : "鍔犲叆鎴戜滑"}
           </h1>
         </div>
 
@@ -109,9 +181,9 @@ export default function LoginPage() {
                 "relative z-10 flex-1 py-2 text-xs font-bold transition-colors",
                 mode === "login" ? "text-zinc-900 dark:text-white" : "text-zinc-400"
               )}
-              onClick={() => setMode("login")}
+              onClick={() => setValue("mode", "login", { shouldValidate: true })}
             >
-              登录账号
+              鐧诲綍璐﹀彿
             </button>
             <button
               type="button"
@@ -119,34 +191,48 @@ export default function LoginPage() {
                 "relative z-10 flex-1 py-2 text-xs font-bold transition-colors",
                 mode === "register" ? "text-zinc-900 dark:text-white" : "text-zinc-400"
               )}
-              onClick={() => setMode("register")}
+              onClick={() => setValue("mode", "register", { shouldValidate: true })}
             >
-              注册新用户
+              娉ㄥ唽鏂扮敤鎴?
             </button>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div className="space-y-3">
               <div className="relative">
                 <User className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
                 <Input
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="用户名"
+                  {...register("username")}
+                  placeholder="鐢ㄦ埛鍚?"
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  aria-invalid={!!errors.username}
                   className="h-12 rounded-xl border-zinc-200/60 bg-white/50 pl-11 focus:ring-orange-500/20 dark:border-zinc-700/50 dark:bg-zinc-800/50"
                 />
               </div>
+              {errors.username && (
+                <p className="px-1 text-[11px] font-semibold text-rose-500">
+                  {errors.username.message}
+                </p>
+              )}
 
               <div className="relative">
                 <Lock className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
                 <Input
                   type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="密码"
+                  {...register("password")}
+                  placeholder="瀵嗙爜"
+                  autoComplete={mode === "register" ? "new-password" : "current-password"}
+                  aria-invalid={!!errors.password}
                   className="h-12 rounded-xl border-zinc-200/60 bg-white/50 pl-11 focus:ring-orange-500/20 dark:border-zinc-700/50 dark:bg-zinc-800/50"
                 />
               </div>
+              {errors.password && (
+                <p className="px-1 text-[11px] font-semibold text-rose-500">
+                  {errors.password.message}
+                </p>
+              )}
 
               <AnimatePresence mode="popLayout">
                 {mode === "register" && (
@@ -159,18 +245,22 @@ export default function LoginPage() {
                     <div className="relative">
                       <Ticket className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
                       <Input
-                        value={inviteCode}
-                        onChange={(e) => setInviteCode(e.target.value)}
-                        placeholder="邀请码"
+                        {...register("inviteCode")}
+                        placeholder="閭€璇风爜"
+                        aria-invalid={!!errors.inviteCode}
                         className="h-12 rounded-xl border-zinc-200/60 bg-white/50 pl-11 dark:border-zinc-700/50 dark:bg-zinc-800/50"
                       />
                     </div>
+                    {errors.inviteCode && (
+                      <p className="px-1 text-[11px] font-semibold text-rose-500">
+                        {errors.inviteCode.message}
+                      </p>
+                    )}
                     <div className="relative">
                       <Smile className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
                       <Input
-                        value={displayName}
-                        onChange={(e) => setDisplayName(e.target.value)}
-                        placeholder="昵称 (可选)"
+                        {...register("displayName")}
+                        placeholder="鏄电О (鍙€?"
                         className="h-12 rounded-xl border-zinc-200/60 bg-white/50 pl-11 dark:border-zinc-700/50 dark:bg-zinc-800/50"
                       />
                     </div>
@@ -179,26 +269,26 @@ export default function LoginPage() {
               </AnimatePresence>
             </div>
 
-            {error && (
+            {serverError && (
               <motion.p
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 className="flex items-center gap-2 px-1 text-[11px] font-bold text-rose-500"
               >
-                <ShieldCheck size={12} /> {error}
+                <ShieldCheck size={12} /> {serverError}
               </motion.p>
             )}
 
             <Button
               className="group h-12 w-full rounded-xl bg-zinc-900 text-sm font-bold transition-all hover:bg-zinc-800 active:scale-[0.98] dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
-              disabled={loading}
+              disabled={isSubmitting}
               type="submit"
             >
-              {loading ? (
+              {isSubmitting ? (
                 <Loader2 className="animate-spin" size={18} />
               ) : (
                 <>
-                  {mode === "login" ? "立即登录" : "创建账号"}
+                  {mode === "login" ? "绔嬪嵆鐧诲綍" : "鍒涘缓璐﹀彿"}
                   <ArrowRight size={16} className="ml-2 transition-transform group-hover:translate-x-1" />
                 </>
               )}
@@ -206,11 +296,11 @@ export default function LoginPage() {
           </form>
 
           <p className="mt-8 text-center text-[11px] leading-relaxed text-zinc-400">
-            保护账户安全。登录即代表您同意我们的
+            淇濇姢璐︽埛瀹夊叏銆傜櫥褰曞嵆浠ｈ〃鎮ㄥ悓鎰忔垜浠殑
             <br />
-            <span className="cursor-pointer text-zinc-900 underline dark:text-zinc-200">服务协议</span>{" "}
-            与{" "}
-            <span className="cursor-pointer text-zinc-900 underline dark:text-zinc-200">隐私政策</span>
+            <span className="cursor-pointer text-zinc-900 underline dark:text-zinc-200">鏈嶅姟鍗忚</span>{" "}
+            涓巤" "}
+            <span className="cursor-pointer text-zinc-900 underline dark:text-zinc-200">闅愮鏀跨瓥</span>
           </p>
         </div>
       </motion.div>

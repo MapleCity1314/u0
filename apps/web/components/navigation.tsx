@@ -1,33 +1,37 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Activity, CircleUser, LayoutDashboard, Moon, Search, Sun } from "lucide-react";
+import { Activity, CircleUser, LayoutDashboard, LogOut, Search } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
-import { useUserStore } from "@/lib/user-store";
+import { useAuthStore } from "@/stores/auth";
 
 const items = [
   { id: "dashboard", label: "仪表盘", icon: LayoutDashboard },
-  { id: "search", label: "搜索", icon: Search },
+  { id: "search", label: "自选", icon: Search },
   { id: "valuation", label: "估值", icon: Activity },
   { id: "account", label: "账户", icon: CircleUser },
 ];
 
-export default function AppNavigation({
-  isDark,
-  toggleTheme,
-}: {
-  isDark: boolean;
-  toggleTheme: () => void;
-}) {
+export default function AppNavigation() {
   const [active, setActive] = useState("dashboard");
-  const user = useUserStore((state) => state.user);
+  const router = useRouter();
+  const user = useAuthStore((state) => state.user);
+  const clearUser = useAuthStore((state) => state.clearUser);
   const initials =
-    user?.name?.trim()?.slice(0, 1) ||
+    user?.displayId?.trim()?.slice(0, 1) ||
     user?.username?.trim()?.slice(0, 1) ||
     "U";
+
+  const handleLogout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    clearUser();
+    router.push("/login");
+  };
 
   return (
     <>
@@ -81,11 +85,16 @@ export default function AppNavigation({
 
           <div className="h-px w-8 bg-zinc-200 dark:bg-zinc-800" />
 
+          <AnimatedThemeToggler
+            iconSize={20}
+            className="flex h-12 w-12 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          />
           <button
-            onClick={toggleTheme}
-            className="flex h-12 w-12 items-center justify-center rounded-full text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            onClick={handleLogout}
+            className="flex h-12 w-12 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            aria-label="Log out"
           >
-            {isDark ? <Sun size={20} /> : <Moon size={20} />}
+            <LogOut size={20} />
           </button>
         </motion.div>
       </nav>
@@ -122,8 +131,16 @@ export default function AppNavigation({
           );
         })}
         </AnimatePresence>
-        <button onClick={toggleTheme} className="text-zinc-500">
-          {isDark ? <Sun size={22} /> : <Moon size={22} />}
+        <AnimatedThemeToggler
+          iconSize={22}
+          className="text-zinc-500 transition-colors hover:text-zinc-900 dark:hover:text-zinc-100"
+        />
+        <button
+          onClick={handleLogout}
+          className="text-zinc-500 transition-colors hover:text-zinc-900 dark:hover:text-zinc-100"
+          aria-label="Log out"
+        >
+          <LogOut size={22} />
         </button>
       </nav>
     </>

@@ -22,3 +22,38 @@ class NewsQuery(BaseModel):
     market: str | None = None
     source: str | None = None
     limit: int = 50
+
+
+class MarketIndexOut(BaseModel):
+    name: str
+    value: str
+    change: float
+    amount: str
+    news_id: int | None = None
+    news_title: str | None = None
+
+
+class MarketSentimentOut(BaseModel):
+    score: int
+    label: str
+    weather: str
+
+
+class MarketDistributionOut(BaseModel):
+    up: int
+    flat: int
+    down: int
+    label: str
+
+
+class MarketTurnoverOut(BaseModel):
+    current: str
+    compare: float
+    label: str
+
+
+class MarketBentoOut(BaseModel):
+    indices: list[MarketIndexOut]
+    sentiment: MarketSentimentOut
+    distribution: MarketDistributionOut
+    turnover: MarketTurnoverOut

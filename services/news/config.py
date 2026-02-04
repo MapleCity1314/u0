@@ -43,4 +43,25 @@ SOURCES: List[SourceSpec] = [
         kind="json",
         lang="zh",
     ),
+    SourceSpec(
+        name="RTHK Finance",
+        market="HK",
+        url="https://rthk.hk/rthk/news/rss/e_expressnews_efinance.xml",
+        kind="rss",
+        lang="en",
+    ),
+    SourceSpec(
+        name="CNBC US Markets",
+        market="US",
+        url="https://www.cnbc.com/id/15837362/device/rss/rss.html",
+        kind="rss",
+        lang="en",
+    ),
+    SourceSpec(
+        name="Goldbroker News",
+        market="GL",
+        url="https://www.goldbroker.com/en/news.rss",
+        kind="rss",
+        lang="en",
+    ),
 ]
