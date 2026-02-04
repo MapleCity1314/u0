@@ -17,6 +17,8 @@
   - `pip install akshare pandas numpy scikit-learn`
 - Run the MVP demo:
   - `python labs/fund_nav_rt_022485/main.py` (best during A-share trading hours)
+- Run tests:
+  - `python -m pytest`
 
 No build system is defined yet (empty `Makefile`, empty `pyproject.toml`). Keep commands project-local and documented here as they are added.
 

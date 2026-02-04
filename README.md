@@ -123,3 +123,40 @@ python labs/fund_nav_rt_022485/main.py
 <p align="right">
   Built with Precision by <strong>u0 Team</strong>
 </p>
+
+---
+
+## API Reference (Swagger-like)
+
+Base URL: `http://localhost:8000`
+
+Auth: Send `Authorization: Bearer <token>` for protected endpoints.
+
+| Method | Path | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| GET | /health | No | Health check. |
+| GET | /api/funds/search?q= | No | Search funds by code/name. |
+| GET | /api/funds/{code}?index_code=&source= | No | Fund estimate detail. `source` in `auto|eastmoney|model|both`. |
+| GET | /api/funds/{code}/curve?days= | No | Recent NAV curve with estimate point. |
+| GET | /api/news?q=&market=&source=&limit=&cursor= | No | List news items (full-text search on `q`). |
+| GET | /api/news/stream | No | Server-Sent Events stream of news items. |
+| POST | /api/logs | No | Create a log entry. |
+| GET | /api/logs?level=&module=&request_id=&limit= | No | List logs with filters. |
+| POST | /api/auth/register | No | Register with invite code. |
+| POST | /api/auth/login | No | Login. |
+| POST | /api/auth/logout | Yes | Revoke current token. |
+| GET | /api/auth/me | Yes | Current user. |
+| POST | /api/auth/password | Yes | Update password. |
+| POST | /api/invites | Yes | Create invite. |
+| GET | /api/invites | Yes | List invites. |
+| DELETE | /api/invites/{code} | Yes | Revoke invite. |
+| GET | /api/positions | Yes | List active positions. |
+| POST | /api/positions | Yes | Create/update a position. |
+| DELETE | /api/positions/{code} | Yes | Soft delete a position. |
+| POST | /api/positions/import/csv | Yes | Import positions via CSV. |
+
+CSV import headers (exact order): `code,units,cost,amount,trade_date`
+
+Pagination: use `cursor` (last item `id` from previous page). The API returns items with `id < cursor`.
+
+Caching: fund estimate and curve responses are cached (Redis if `REDIS_URL` is set; otherwise in-memory).

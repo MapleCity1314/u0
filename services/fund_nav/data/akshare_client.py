@@ -1,4 +1,6 @@
+import os
 import re
+import threading
 from typing import Optional
 
 import pandas as pd
@@ -6,12 +8,23 @@ import pandas as pd
 from services.modules.akshare import cached_call, has_func
 
 REQUEST_TIMEOUT = 25
+BG_REFRESH_INTERVAL_SEC = int(os.getenv("FUND_NAV_BG_REFRESH_INTERVAL_SEC", "20"))
+BG_REFRESH_ENABLED = os.getenv("FUND_NAV_BG_REFRESH_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+_bg_started = False
 
 
 def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
     return df
+
+
+def _col_has(text: str, *tokens: str) -> bool:
+    return any(token in text for token in tokens)
 
 
 def get_fund_nav_daily(symbol: str) -> pd.DataFrame:
@@ -26,9 +39,9 @@ def get_fund_nav_daily(symbol: str) -> pd.DataFrame:
     date_col = None
     nav_col = None
     for c in df.columns:
-        if "净值日期" in c or c.lower() in ("date", "日期"):
+        if _col_has(c, "净值日期") or c.lower() in ("date", "日期"):
             date_col = c
-        if "单位净值" in c or c.lower() in ("unit_net_value", "nav"):
+        if _col_has(c, "单位净值") or c.lower() in ("unit_net_value", "nav"):
             nav_col = c
     if date_col is None or nav_col is None:
         raise RuntimeError("基金净值字段识别失败")
@@ -72,7 +85,10 @@ def get_fund_value_estimation() -> Optional[pd.DataFrame]:
     if not has_func("fund_value_estimation_em"):
         return None
 
-    df = cached_call("fund_value_estimation_em", timeout=REQUEST_TIMEOUT, ttl=30)
+    try:
+        df = cached_call("fund_value_estimation_em", timeout=REQUEST_TIMEOUT, ttl=30)
+    except Exception:
+        return None
     return _clean_df(df)
 
 
@@ -134,6 +150,20 @@ def get_stock_spot() -> Optional[pd.DataFrame]:
     return spot
 
 
+def get_stock_spot_v2() -> Optional[pd.DataFrame]:
+    candidates = [
+        ("stock_zh_a_spot_em", None),
+        ("stock_zh_a_spot", None),
+        ("stock_zh_a_spot_sina", None),
+    ]
+    for name, kwargs in candidates:
+        if not has_func(name):
+            continue
+        try:
+            return _clean_df(cached_call(name, kwargs=kwargs, timeout=REQUEST_TIMEOUT, ttl=20))
+        except Exception:
+            continue
+    return None
 def get_etf_spot_return_map() -> Optional[pd.Series]:
     if not has_func("fund_etf_spot_em"):
         return None
@@ -191,6 +221,71 @@ def get_etf_spot_return_map() -> Optional[pd.Series]:
     return pd.Series(dict(out))
 
 
+def get_etf_spot_return_map_v2() -> Optional[pd.Series]:
+    candidates = [
+        ("fund_etf_spot_em", None),
+        ("fund_etf_spot", None),
+    ]
+
+    def _parse_spot(spot: pd.DataFrame) -> Optional[pd.Series]:
+        code_col = None
+        last_col = None
+        prev_col = None
+        iopv_col = None
+        pct_col = None
+        for c in spot.columns:
+            if _col_has(c, "??", "????", "????") or c.lower() in ("code",):
+                code_col = c
+            if _col_has(c, "???", "??") or c.lower() in ("price", "latest"):
+                last_col = c
+            if _col_has(c, "??", "??") or c.lower() in ("pre_close", "prev_close"):
+                prev_col = c
+            if _col_has(c, "IOPV", "????", "????"):
+                iopv_col = c
+            if _col_has(c, "???", "??", "??") or c.lower() in ("pct", "change_pct"):
+                pct_col = c
+
+        if code_col is None:
+            return None
+
+        out = []
+        for _, row in spot.iterrows():
+            code = str(row[code_col]).zfill(6)
+            ret = None
+            if iopv_col is not None and prev_col is not None:
+                iopv = pd.to_numeric(row.get(iopv_col), errors="coerce")
+                prev = pd.to_numeric(row.get(prev_col), errors="coerce")
+                if pd.notna(iopv) and pd.notna(prev) and prev > 0:
+                    ret = float((iopv - prev) / prev)
+            if ret is None and last_col is not None and prev_col is not None:
+                last = pd.to_numeric(row.get(last_col), errors="coerce")
+                prev = pd.to_numeric(row.get(prev_col), errors="coerce")
+                if pd.notna(last) and pd.notna(prev) and prev > 0:
+                    ret = float((last - prev) / prev)
+            if ret is None and pct_col is not None:
+                pct = pd.to_numeric(row.get(pct_col), errors="coerce")
+                if pd.notna(pct):
+                    ret = float(pct) / 100.0
+            if ret is None:
+                continue
+            out.append((code, ret))
+
+        if not out:
+            return None
+        return pd.Series(dict(out))
+
+    for name, kwargs in candidates:
+        if not has_func(name):
+            continue
+        try:
+            spot = _clean_df(cached_call(name, kwargs=kwargs, timeout=REQUEST_TIMEOUT, ttl=20))
+        except Exception:
+            continue
+        parsed = _parse_spot(spot)
+        if parsed is not None:
+            return parsed
+
+    return None
 def get_index_spot_pct_change() -> Optional[pd.Series]:
     def fetch():
         spot = _clean_df(
@@ -215,6 +310,89 @@ def get_index_spot_pct_change() -> Optional[pd.Series]:
         return None
     return data
 
+
+def get_index_spot_pct_change_v2() -> Optional[pd.Series]:
+    candidates = [
+        ("stock_zh_index_spot_em", {"symbol": "??????"}),
+        ("stock_zh_index_spot", None),
+        ("stock_zh_index_spot_sina", None),
+    ]
+
+    for name, kwargs in candidates:
+        if not has_func(name):
+            continue
+        try:
+            spot = _clean_df(cached_call(name, kwargs=kwargs, timeout=REQUEST_TIMEOUT, ttl=20))
+        except Exception:
+            continue
+
+        code_col = None
+        pct_col = None
+        for c in spot.columns:
+            if _col_has(c, "??") or c.lower() in ("code",):
+                code_col = c
+            if _col_has(c, "???", "??") or c.lower() in ("pct", "change_pct"):
+                pct_col = c
+        if code_col is None or pct_col is None:
+            continue
+        return spot.set_index(code_col)[pct_col] / 100.0
+
+    return None
+
+
+def _get_index_daily_return(index_code: str) -> float | None:
+    candidates = [
+        ("index_zh_a_hist", "daily"),
+        ("stock_zh_index_daily_em", None),
+    ]
+
+    def _parse_hist(df: pd.DataFrame) -> float | None:
+        df = _clean_df(df)
+        date_col = None
+        close_col = None
+        for c in df.columns:
+            if _col_has(c, "??") or c.lower() in ("date",):
+                date_col = c
+            if _col_has(c, "??") or c.lower() in ("close",):
+                close_col = c
+        if date_col is None or close_col is None:
+            return None
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=[date_col, close_col]).sort_values(date_col)
+        if len(df) < 2:
+            return None
+        prev = pd.to_numeric(df[close_col].iloc[-2], errors="coerce")
+        last = pd.to_numeric(df[close_col].iloc[-1], errors="coerce")
+        if pd.isna(prev) or pd.isna(last) or prev <= 0:
+            return None
+        return float((last - prev) / prev)
+
+    for name, mode in candidates:
+        if not has_func(name):
+            continue
+        try:
+            if name == "index_zh_a_hist":
+                code = index_code
+                if code.lower().startswith(("sh", "sz")) and len(code) >= 8:
+                    code = code[2:]
+                df = cached_call(
+                    name,
+                    kwargs={
+                        "symbol": code,
+                        "period": mode,
+                    },
+                    timeout=REQUEST_TIMEOUT,
+                    ttl=300,
+                )
+            else:
+                df = cached_call(name, kwargs={"symbol": index_code}, timeout=REQUEST_TIMEOUT, ttl=300)
+            ret = _parse_hist(df)
+            if ret is not None:
+                return ret
+        except Exception:
+            continue
+
+    return None
 
 def get_industry_spot_pct_change() -> Optional[pd.Series]:
     if not has_func("stock_board_industry_spot_em"):
@@ -242,6 +420,97 @@ def get_industry_spot_pct_change() -> Optional[pd.Series]:
     if data is None:
         return None
     return data
+
+
+def get_industry_spot_pct_change_v2() -> Optional[pd.Series]:
+    candidates = [
+        ("stock_board_industry_spot_em", None),
+        ("stock_board_industry_spot", None),
+    ]
+
+    for name, kwargs in candidates:
+        if not has_func(name):
+            continue
+        try:
+            spot = _clean_df(cached_call(name, kwargs=kwargs, timeout=REQUEST_TIMEOUT, ttl=20))
+        except Exception:
+            continue
+
+        name_col = None
+        pct_col = None
+        for c in spot.columns:
+            if _col_has(c, "??", "??", "??", "????") or c.lower() in ("name",):
+                name_col = c
+            if _col_has(c, "???", "??") or c.lower() in ("pct", "change_pct"):
+                pct_col = c
+        if name_col is None or pct_col is None:
+            continue
+        return spot.set_index(name_col)[pct_col] / 100.0
+
+    return None
+
+
+def _get_industry_daily_return(industry_name: str) -> float | None:
+    candidates = [
+        ("stock_board_industry_hist_em", None),
+        ("stock_board_industry_hist", None),
+    ]
+
+    def _parse_hist(df: pd.DataFrame) -> float | None:
+        df = _clean_df(df)
+        date_col = None
+        close_col = None
+        for c in df.columns:
+            if _col_has(c, "??") or c.lower() in ("date",):
+                date_col = c
+            if _col_has(c, "??") or c.lower() in ("close",):
+                close_col = c
+        if date_col is None or close_col is None:
+            return None
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=[date_col, close_col]).sort_values(date_col)
+        if len(df) < 2:
+            return None
+        prev = pd.to_numeric(df[close_col].iloc[-2], errors="coerce")
+        last = pd.to_numeric(df[close_col].iloc[-1], errors="coerce")
+        if pd.isna(prev) or pd.isna(last) or prev <= 0:
+            return None
+        return float((last - prev) / prev)
+
+    for name, _ in candidates:
+        if not has_func(name):
+            continue
+        try:
+            df = cached_call(name, kwargs={"symbol": industry_name}, timeout=REQUEST_TIMEOUT, ttl=300)
+            ret = _parse_hist(df)
+            if ret is not None:
+                return ret
+        except Exception:
+            continue
+
+    return None
+
+def start_background_refresh(interval: int | None = None) -> None:
+    global _bg_started
+    if _bg_started or not BG_REFRESH_ENABLED:
+        return
+    _bg_started = True
+    refresh_interval = interval or BG_REFRESH_INTERVAL_SEC
+
+    def loop() -> None:
+        while True:
+            try:
+                get_fund_value_estimation()
+                get_index_spot_pct_change()
+                get_industry_spot_pct_change()
+                get_etf_spot_return_map()
+                get_stock_spot()
+            except Exception:
+                pass
+            threading.Event().wait(refresh_interval)
+
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
 
 
 def get_stock_industry(code: str) -> Optional[str]:
@@ -273,6 +542,35 @@ def get_stock_industry(code: str) -> Optional[str]:
     return industry
 
 
+def get_stock_industry_v2(code: str) -> Optional[str]:
+    if not has_func("stock_individual_info_em"):
+        return None
+    try:
+        info = _clean_df(
+            cached_call(
+                "stock_individual_info_em",
+                kwargs={"symbol": code},
+                timeout=REQUEST_TIMEOUT,
+                ttl=300,
+            )
+        )
+    except Exception:
+        return None
+
+    industry = None
+    for c in info.columns:
+        if _col_has(c, "行业") and not info[c].isna().all():
+            industry = str(info[c].iloc[0])
+            break
+    if industry is None and info.shape[1] >= 2:
+        key_col = info.columns[0]
+        val_col = info.columns[1]
+        mask = info[key_col].astype(str).str.contains("行业", na=False)
+        if mask.any():
+            industry = str(info.loc[mask, val_col].iloc[0])
+    return industry
+
+
 def _spot_series(spot: pd.DataFrame) -> pd.Series:
     code_col = None
     pct_col = None
@@ -280,6 +578,19 @@ def _spot_series(spot: pd.DataFrame) -> pd.Series:
         if "代码" in c or c.lower() in ("code", "股票代码"):
             code_col = c
         if "涨跌幅" in c or c.lower() in ("pct", "change_pct", "涨跌幅(%)"):
+            pct_col = c
+    if code_col is None or pct_col is None:
+        raise RuntimeError("股票实时字段识别失败")
+    return spot.set_index(code_col)[pct_col] / 100.0
+
+
+def _spot_series_v2(spot: pd.DataFrame) -> pd.Series:
+    code_col = None
+    pct_col = None
+    for c in spot.columns:
+        if _col_has(c, "代码") or c.lower() in ("code", "stock_code"):
+            code_col = c
+        if _col_has(c, "涨跌幅", "涨跌") or c.lower() in ("pct", "change_pct"):
             pct_col = c
     if code_col is None or pct_col is None:
         raise RuntimeError("股票实时字段识别失败")
@@ -296,9 +607,9 @@ def estimate_with_holdings(symbol: str, index_ret: float | None) -> tuple[float,
     code_col = None
     weight_col = None
     for c in holdings.columns:
-        if "股票代码" in c or c.lower() in ("stock_code", "code"):
+        if _col_has(c, "????") or c.lower() in ("stock_code", "code"):
             code_col = c
-        if "占净值比例" in c or "持仓占比" in c or c.lower() in ("weight", "ratio"):
+        if _col_has(c, "?????", "????") or c.lower() in ("weight", "ratio"):
             weight_col = c
     if code_col is None or weight_col is None:
         return (index_ret or 0.0, 0.0, "index_only")
@@ -313,10 +624,10 @@ def estimate_with_holdings(symbol: str, index_ret: float | None) -> tuple[float,
     if total_weight <= 0:
         return (index_ret or 0.0, 0.0, "index_only")
 
-    etf_spot = get_etf_spot_return_map()
-    stock_spot = get_stock_spot()
-    stock_ret = _spot_series(stock_spot) if stock_spot is not None else None
-    industry_spot = get_industry_spot_pct_change()
+    etf_spot = get_etf_spot_return_map_v2()
+    stock_spot = get_stock_spot_v2()
+    stock_ret = _spot_series_v2(stock_spot) if stock_spot is not None else None
+    industry_spot = get_industry_spot_pct_change_v2()
 
     ret_sum = 0.0
     direct_weight = 0.0
@@ -338,7 +649,7 @@ def estimate_with_holdings(symbol: str, index_ret: float | None) -> tuple[float,
 
         ind_ret = None
         if industry_spot is not None:
-            industry = get_stock_industry(code)
+            industry = get_stock_industry_v2(code)
             if industry and industry in industry_spot.index:
                 ind_ret = float(industry_spot.loc[industry])
 
@@ -357,8 +668,6 @@ def estimate_with_holdings(symbol: str, index_ret: float | None) -> tuple[float,
 
     coverage = direct_weight / (total_weight / 100.0) if total_weight > 0 else 0.0
     return (ret_sum, coverage, source)
-
-
 def estimate_with_industry_allocation(
     symbol: str, index_ret: float | None
 ) -> tuple[float, float, str]:
@@ -371,9 +680,9 @@ def estimate_with_industry_allocation(
     industry_col = None
     weight_col = None
     for c in alloc.columns:
-        if "行业" in c:
+        if _col_has(c, "??"):
             industry_col = c
-        if "占净值比例" in c or "持仓占比" in c or c.lower() in ("weight", "ratio"):
+        if _col_has(c, "?????", "????") or c.lower() in ("weight", "ratio"):
             weight_col = c
     if industry_col is None or weight_col is None:
         return (index_ret or 0.0, 0.0, "index_only")
@@ -388,9 +697,18 @@ def estimate_with_industry_allocation(
     if total_weight <= 0:
         return (index_ret or 0.0, 0.0, "index_only")
 
-    industry_spot = get_industry_spot_pct_change()
+    industry_spot = get_industry_spot_pct_change_v2()
+    source_base = "industry"
     if industry_spot is None:
-        return (index_ret or 0.0, 0.0, "index_only")
+        ret_map = {}
+        for industry in df["industry"].unique().tolist():
+            ret = _get_industry_daily_return(str(industry))
+            if ret is not None:
+                ret_map[str(industry)] = ret
+        if not ret_map:
+            return (index_ret or 0.0, 0.0, "index_only")
+        industry_spot = pd.Series(ret_map)
+        source_base = "industry_daily"
 
     ret_sum = 0.0
     covered = 0.0
@@ -407,15 +725,13 @@ def estimate_with_industry_allocation(
     residual_weight = max(0.0, 1.0 - total_weight / 100.0)
     missing_weight += residual_weight
 
-    source = "industry"
+    source = source_base
     if missing_weight > 0 and index_ret is not None:
         ret_sum += missing_weight * index_ret
-        source = "industry+index"
+        source = f"{source_base}+index"
 
     coverage = covered / (total_weight / 100.0) if total_weight > 0 else 0.0
     return (ret_sum, coverage, source)
-
-
 def get_fund_holdings(symbol: str) -> Optional[pd.DataFrame]:
     if not has_func("fund_portfolio_hold_em"):
         return None
@@ -463,7 +779,7 @@ def get_fund_industry_allocation(symbol: str) -> Optional[pd.DataFrame]:
 def parse_latest_quarter(df: pd.DataFrame) -> pd.DataFrame:
     quarter_col = None
     for c in df.columns:
-        if "季度" in c:
+        if _col_has(c, "??"):
             quarter_col = c
             break
     if quarter_col is None:
@@ -472,7 +788,7 @@ def parse_latest_quarter(df: pd.DataFrame) -> pd.DataFrame:
     def _parse(text: str) -> Optional[tuple[int, int]]:
         if not isinstance(text, str):
             return None
-        m = re.search(r"(\d{4})年\s*([1-4])季度", text)
+        m = re.search(r"(\d{4})?\s*([1-4])??", text)
         if not m:
             return None
         return int(m.group(1)), int(m.group(2))
@@ -485,12 +801,10 @@ def parse_latest_quarter(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values("_q")
     latest = df["_q"].iloc[-1]
     return df[df["_q"] == latest]
-
-
 def parse_latest_date(df: pd.DataFrame) -> pd.DataFrame:
     date_col = None
     for c in df.columns:
-        if "截止时间" in c or c.lower() in ("date", "截止日期"):
+        if _col_has(c, "????", "????") or c.lower() in ("date", "??"):
             date_col = c
             break
     if date_col is None:
@@ -502,8 +816,6 @@ def parse_latest_date(df: pd.DataFrame) -> pd.DataFrame:
         return df
     latest = df["_d"].max()
     return df[df["_d"] == latest]
-
-
 def _eastmoney_estimate(
     est_df: Optional[pd.DataFrame], code: str, last_nav: float | None
 ) -> tuple[float | None, float | None, str | None]:
@@ -529,6 +841,7 @@ def _model_estimate(
     est_ret, coverage, source = estimate_with_holdings(code, index_ret)
     if coverage < 0.6:
         ind_ret, ind_cov, ind_src = estimate_with_industry_allocation(code, index_ret)
+        # 估值公式
         est_ret = est_ret * coverage + ind_ret * (1.0 - coverage)
         source = f"{source}+{ind_src}"
         coverage = max(coverage, ind_cov)
@@ -536,32 +849,84 @@ def _model_estimate(
     return (est_ret, est_nav, source, coverage)
 
 
+def _infer_index_code_from_name(name: str | None) -> str | None:
+    if not name:
+        return None
+    upper = name.upper()
+    if "沪深300" in name or "HS300" in upper:
+        return "000300"
+    if "中证500" in name or "ZZ500" in upper:
+        return "000905"
+    if "中证1000" in name or "ZZ1000" in upper:
+        return "000852"
+    if "中证A500" in name or "A500" in upper:
+        return "000510"
+    if "创业板" in name or "CYB" in upper:
+        return "399006"
+    if "科创50" in name or "STAR50" in upper:
+        return "000688"
+    return None
+
+
+def _lookup_index_ret(index_spot: pd.Series, index_code: str) -> float | None:
+    candidates = []
+    code = index_code.strip()
+    candidates.append(code)
+    if code.lower().startswith(("sh", "sz")) and len(code) >= 8:
+        candidates.append(code[2:])
+    if code.endswith((".SH", ".SZ")) and len(code) >= 9:
+        candidates.append(code[:-3])
+    if len(code) == 6:
+        candidates.append(f"{code}.SH")
+        candidates.append(f"{code}.SZ")
+        candidates.append(f"sh{code}")
+        candidates.append(f"sz{code}")
+
+    for c in candidates:
+        if c in index_spot.index:
+            return float(index_spot.loc[c])
+    return None
+
+
 def estimate_fund(
-    code: str, index_code: str | None = None, source: str = "auto"
+    code: str, index_code: str | None = None, source: str = "model"
 ) -> dict:
     fund_df = get_fund_nav_daily(code)
     last_nav = float(fund_df["nav"].iloc[-1]) if not fund_df.empty else None
 
+    est_df = None
+    fund_name = None
+    if source != "model":
+        est_df = get_fund_value_estimation()
+        if est_df is not None:
+            code_col = None
+            name_col = None
+            for c in est_df.columns:
+                if _col_has(c, "基金代码", "代码") or c.lower() in ("code",):
+                    code_col = c
+                if _col_has(c, "基金名称", "名称") or c.lower() in ("name",):
+                    name_col = c
+            if code_col is not None and name_col is not None:
+                row = est_df[est_df[code_col].astype(str) == str(code)]
+                if not row.empty:
+                    fund_name = str(row.iloc[0][name_col])
+
+    if index_code is None and fund_name is not None:
+        index_code = _infer_index_code_from_name(fund_name)
+
     index_ret = None
     if index_code:
-        index_spot = get_index_spot_pct_change()
-        if index_spot is not None and index_code in index_spot.index:
-            index_ret = float(index_spot.loc[index_code])
+        index_spot = get_index_spot_pct_change_v2()
+        if index_spot is not None:
+            index_ret = _lookup_index_ret(index_spot, index_code)
+        if index_ret is None:
+            index_ret = _get_index_daily_return(index_code)
 
-    est_df = get_fund_value_estimation()
-    fund_name = None
-    if est_df is not None:
-        code_col = None
-        name_col = None
-        for c in est_df.columns:
-            if "基金代码" in c or c.lower() in ("code", "基金代码"):
-                code_col = c
-            if "基金名称" in c or c.lower() in ("name", "基金名称"):
-                name_col = c
-        if code_col is not None and name_col is not None:
-            row = est_df[est_df[code_col].astype(str) == str(code)]
-            if not row.empty:
-                fund_name = str(row.iloc[0][name_col])
+    if index_ret is None and not fund_df.empty and 'fund_ret' in fund_df.columns:
+        try:
+            index_ret = float(fund_df['fund_ret'].iloc[-1])
+        except Exception:
+            index_ret = None
 
     em_ret, em_nav, em_source = _eastmoney_estimate(est_df, code, last_nav)
     model_ret, model_nav, model_source, model_cov = _model_estimate(code, last_nav, index_ret)

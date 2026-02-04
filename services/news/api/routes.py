@@ -15,6 +15,7 @@ def list_news(
     q: str | None = None,
     market: str | None = None,
     source: str | None = None,
+    cursor: int | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
@@ -28,7 +29,9 @@ def list_news(
             query = query.filter(NewsItem.market == market)
         if source:
             query = query.filter(NewsItem.source == source)
-        return query.order_by(NewsItem.published_at.desc()).limit(limit).all()
+        if cursor:
+            query = query.filter(NewsItem.id < cursor)
+        return query.order_by(NewsItem.published_at.desc(), NewsItem.id.desc()).limit(limit).all()
     except Exception as exc:
         log_event("error", "news.api", "query_failed", error=str(exc))
         raise HTTPException(status_code=500, detail="news_query_failed")

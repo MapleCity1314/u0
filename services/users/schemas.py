@@ -1,16 +1,17 @@
 from datetime import datetime
-from pydantic import BaseModel
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
 
 
 class UserOut(BaseModel):
-    id: str
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
     display_id: str
     username: str
     status: str
     created_at: datetime | None = None
-
-    class Config:
-        orm_mode = True
 
 
 class RegisterRequest(BaseModel):
@@ -31,17 +32,18 @@ class AuthResponse(BaseModel):
 
 
 class InviteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     code: str
     status: str
     used_count: int
     max_uses: int
     expires_at: datetime
 
-    class Config:
-        orm_mode = True
-
 
 class PositionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     code: str
     units: float | None = None
@@ -52,9 +54,6 @@ class PositionOut(BaseModel):
     is_active: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None
-
-    class Config:
-        orm_mode = True
 
 
 class PositionCreate(BaseModel):

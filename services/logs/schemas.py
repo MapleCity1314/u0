@@ -1,8 +1,10 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class LogEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     level: str
     module: str | None = None
@@ -11,9 +13,6 @@ class LogEntryOut(BaseModel):
     error: str | None = None
     extra: str | None = None
     created_at: datetime | None = None
-
-    class Config:
-        orm_mode = True
 
 
 class LogCreate(BaseModel):
