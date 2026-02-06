@@ -35,3 +35,13 @@ class FundEstimate(BaseModel):
     est_nav_model: float | None = None
     source_model: str | None = None
     coverage_model: float | None = None
+    is_realtime: bool | None = None
+    fallback_used: bool | None = None
+    fallback_source: str | None = None
+
+
+class FundReturns(BaseModel):
+    code: str
+    nav: float | None = None
+    nav_date: str | None = None
+    returns: dict

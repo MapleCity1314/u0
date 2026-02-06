@@ -6,12 +6,17 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+from dotenv import load_dotenv
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.append(ROOT)
 
 from services.core.base import Base
+
+env_path = os.path.join(ROOT, ".env")
+if os.path.exists(env_path):
+    load_dotenv(env_path)
 
 
 def _import_all_models() -> None:

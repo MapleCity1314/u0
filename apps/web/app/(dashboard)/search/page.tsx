@@ -1,24 +1,58 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Check, ChevronDown, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  LayoutDashboard,
+  Loader2,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+  TrendingUp,
+  Wallet,
+  X,
+} from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
-type WatchCategory =
-  | "全部"
-  | "持有"
-  | "已清仓"
-  | "偏股"
-  | "偏债"
-  | "指数"
-  | "全球";
+// --- Types & Constants ---
+
+type WatchCategory = "All" | "Held" | "Closed" | "Equity" | "Bond" | "Index" | "Global";
 
 type WatchItem = {
   id: string;
@@ -26,7 +60,7 @@ type WatchItem = {
   code: string;
   nav: number;
   navDate: string;
-  sinceAdded: number;
+  sinceAdded: number | null;
   categories: WatchCategory[];
   returns: {
     week: number;
@@ -40,6 +74,11 @@ type WatchItem = {
     year5: number;
     inception: number;
   };
+  estimate?: {
+    nav: number;
+    return: number;
+    source: string;
+  };
 };
 
 type Position = {
@@ -48,143 +87,34 @@ type Position = {
   code: string;
   amount: number;
   nav: number;
-  dailyChange: number;
-  totalChange: number;
+  dailyChange: number | null;
+  dailyProfit?: number | null;
+  holdingProfit?: number | null;
+  totalProfit?: number | null;
+  totalChange?: number | null;
   entryNav: number;
   lastInputDate: string;
   updatedAt: string;
   updatedToday: boolean;
   lastDelta?: number;
-  status: "持有" | "已清仓";
+  status: "Held" | "Closed";
+  estimate?: {
+    nav: number;
+    return: number;
+    source: string;
+  };
 };
 
-const categories: WatchCategory[] = [
-  "全部",
-  "持有",
-  "已清仓",
-  "偏股",
-  "偏债",
-  "指数",
-  "全球",
-];
+type SearchItem = { id: string; name: string; code: string };
+type EstimateSource = "rt";
+type EstimateValue = { nav: number; return: number; source: string };
+type EstimateCacheBySource = Record<EstimateSource, Record<string, EstimateValue>>;
 
-const watchlistSeed: WatchItem[] = [
-  {
-    id: "w1",
-    name: "中欧医疗健康混合",
-    code: "003095",
-    nav: 1.8923,
-    navDate: "2026-02-04",
-    sinceAdded: 0.036,
-    categories: ["全部", "偏股", "持有"],
-    returns: {
-      week: 0.012,
-      month: -0.018,
-      quarter: 0.043,
-      halfYear: 0.068,
-      ytd: 0.021,
-      year1: 0.143,
-      year2: 0.228,
-      year3: 0.315,
-      year5: 0.612,
-      inception: 1.842,
-    },
-  },
-  {
-    id: "w2",
-    name: "华夏中证500指数",
-    code: "001052",
-    nav: 1.3348,
-    navDate: "2026-02-04",
-    sinceAdded: -0.012,
-    categories: ["全部", "指数"],
-    returns: {
-      week: 0.004,
-      month: 0.016,
-      quarter: 0.028,
-      halfYear: 0.053,
-      ytd: 0.011,
-      year1: 0.087,
-      year2: 0.132,
-      year3: 0.214,
-      year5: 0.356,
-      inception: 0.905,
-    },
-  },
-  {
-    id: "w3",
-    name: "易方达全球精选",
-    code: "110026",
-    nav: 2.4811,
-    navDate: "2026-02-04",
-    sinceAdded: 0.078,
-    categories: ["全部", "全球", "持有"],
-    returns: {
-      week: 0.022,
-      month: 0.041,
-      quarter: 0.058,
-      halfYear: 0.091,
-      ytd: 0.037,
-      year1: 0.162,
-      year2: 0.244,
-      year3: 0.331,
-      year5: 0.548,
-      inception: 2.018,
-    },
-  },
-  {
-    id: "w4",
-    name: "招商双债增强",
-    code: "161716",
-    nav: 1.1788,
-    navDate: "2026-02-04",
-    sinceAdded: 0.009,
-    categories: ["全部", "偏债", "已清仓"],
-    returns: {
-      week: 0.001,
-      month: 0.005,
-      quarter: 0.009,
-      halfYear: 0.017,
-      ytd: 0.006,
-      year1: 0.034,
-      year2: 0.061,
-      year3: 0.088,
-      year5: 0.144,
-      inception: 0.376,
-    },
-  },
-];
+const CATEGORIES: WatchCategory[] = ["All", "Held", "Closed", "Equity", "Bond", "Index", "Global"];
+const ESTIMATE_SOURCES: EstimateSource[] = ["rt"];
 
-const positionsSeed: Position[] = [
-  {
-    id: "p1",
-    name: "中欧医疗健康混合",
-    code: "003095",
-    amount: 52000,
-    nav: 1.8923,
-    dailyChange: 0.0085,
-    totalChange: 0.132,
-    entryNav: 1.676,
-    lastInputDate: "2026-02-04",
-    updatedAt: "2026-02-04 15:01",
-    updatedToday: true,
-    status: "持有",
-  },
-  {
-    id: "p2",
-    name: "易方达全球精选",
-    code: "110026",
-    amount: 38000,
-    nav: 2.4811,
-    dailyChange: -0.004,
-    totalChange: 0.086,
-    entryNav: 2.283,
-    lastInputDate: "2026-01-29",
-    updatedAt: "2026-02-03 15:02",
-    updatedToday: false,
-    status: "持有",
-  },
-];
+
+// --- Utilities (红涨绿跌) ---
 
 const fmtMoney = (value: number) =>
   new Intl.NumberFormat("zh-CN", {
@@ -193,654 +123,787 @@ const fmtMoney = (value: number) =>
     maximumFractionDigits: 2,
   }).format(value);
 
-const fmtPct = (value: number) =>
-  `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
-
 const fmtNav = (value: number) => value.toFixed(4);
 
-export default function WatchlistPage() {
-  const [activeCategory, setActiveCategory] = useState<WatchCategory>("全部");
-  const [query, setQuery] = useState("");
-  const [watchlist, setWatchlist] = useState<WatchItem[]>(watchlistSeed);
-  const [positions, setPositions] = useState<Position[]>(positionsSeed);
-  const [isSearching, setIsSearching] = useState(false);
-  const [isPortfolioLoading, setIsPortfolioLoading] = useState(false);
-  const [editPositionId, setEditPositionId] = useState<string | null>(null);
-  const [draftAmount, setDraftAmount] = useState<string>("");
-  const [newPositionOpen, setNewPositionOpen] = useState(false);
-  const [newPosition, setNewPosition] = useState({
-    name: "",
-    code: "",
-    amount: "",
-    nav: "",
-  });
+const getTrendColor = (val?: number | null) => {
+  if (val == null || val === 0) return "text-zinc-500 dark:text-zinc-400";
+  return val > 0 ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400";
+};
 
+const fmtPct = (value: number) => {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${(value * 100).toFixed(2)}%`;
+};
+
+// --- Sub-Components ---
+
+/**
+ * 趋势数值组件 (带颜色和箭头)
+ */
+const TrendValue = ({ value, className, showIcon = false }: { value?: number | null; className?: string; showIcon?: boolean }) => {
+  if (value == null) return <span className="text-zinc-300">--</span>;
+  const colorClass = getTrendColor(value);
+  return (
+    <div className={cn("flex items-center gap-0.5 font-mono font-medium", colorClass, className)}>
+      {showIcon && value !== 0 && (
+        value > 0 ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />
+      )}
+      {fmtPct(value)}
+    </div>
+  );
+};
+
+/**
+ * 概览卡片
+ */
+const StatCard = ({ title, value, subValue, icon: Icon }: { title: string; value: string | React.ReactNode; subValue?: string; icon: any }) => (
+  <div className="relative overflow-hidden rounded-xl border border-zinc-200 bg-white p-4 shadow-sm transition-all hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900/60">
+    <div className="flex items-start justify-between">
+      <div>
+        <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{title}</p>
+        <div className="mt-2 text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
+          {value}
+        </div>
+        {subValue && <p className="mt-1 text-xs text-zinc-400">{subValue}</p>}
+      </div>
+      <div className="rounded-lg bg-zinc-100 p-2 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+        <Icon className="size-5" />
+      </div>
+    </div>
+  </div>
+);
+
+// --- Hooks for Business Logic ---
+
+function useWatchlistLogic() {
+  const [activeCategory, setActiveCategory] = useState<WatchCategory>("All");
+  const [estimateSource, setEstimateSource] = useState<EstimateSource>("rt");
+  const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
+  const [watchlistBase, setWatchlistBase] = useState<WatchItem[]>([]);
+  const [positionsBase, setPositionsBase] = useState<Position[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isAdding, setIsAdding] = useState(false);
+  const [marketStatus, setMarketStatus] = useState<{ latest_trading_date?: string } | null>(null);
+  const [estimateCacheBySource, setEstimateCacheBySource] = useState<EstimateCacheBySource>({
+    rt: {},
+  });
+  const [estimateLoading, setEstimateLoading] = useState(false);
+
+  // Load Initial Data
+  const fetchData = async () => {
+    setIsLoading(true);
+    try {
+      // 1. Load Positions
+      const posRes = await fetch("/api/positions/summary?limit=200", { cache: "no-store" });
+      const posData = await posRes.json().catch(() => []);
+      const posList: Position[] = Array.isArray(posData) ? posData.map((item: any) => ({
+        id: String(item.id),
+        name: item.name ?? item.code,
+        code: item.code,
+        amount: Number(item.amount ?? 0),
+        nav: Number(item.nav ?? 0),
+        dailyChange: item.daily_change ?? null,
+        dailyProfit: item.daily_profit ?? null,
+        holdingProfit: item.holding_profit ?? null,
+        totalProfit: item.total_profit ?? null,
+        totalChange: item.entry_nav && item.nav ? Number(item.nav) / Number(item.entry_nav) - 1 : null,
+        entryNav: Number(item.entry_nav ?? item.nav ?? 1),
+        lastInputDate: item.last_input_date ?? "",
+        updatedAt: item.updated_at ?? "",
+        updatedToday: Boolean(item.updated_today),
+        lastDelta: item.last_delta ?? undefined,
+        status: String(item.status ?? "").toLowerCase() === "closed" || item.status === "???" ? "Closed" : "Held",
+      })) : [];
+      setPositionsBase(posList);
+
+      const heldCodes = new Set(posList.map((p) => p.code));
+
+      // 2. Load Watchlist
+      const watchRes = await fetch("/api/watchlist/summary?limit=200", { cache: "no-store" });
+      const watchData = await watchRes.json().catch(() => []);
+      if (Array.isArray(watchData)) {
+        setWatchlistBase(watchData.map((item: any) => {
+          const isClosed = String(item.status ?? "").toLowerCase() === "closed" || item.status === "???";
+          const cats: WatchCategory[] = ["All"];
+          if (heldCodes.has(item.code)) cats.push("Held");
+          if (isClosed) cats.push("Closed");
+          return {
+            id: String(item.id),
+            name: item.name ?? item.code,
+            code: item.code,
+            nav: Number(item.nav ?? 0),
+            navDate: item.nav_date ?? "",
+            sinceAdded: item.since_added ?? null,
+            categories: cats,
+            returns: {
+                week: item.returns?.week ?? 0,
+                month: item.returns?.month ?? 0,
+                quarter: item.returns?.quarter ?? 0,
+                halfYear: item.returns?.halfYear ?? 0,
+                ytd: item.returns?.ytd ?? 0,
+                year1: item.returns?.year1 ?? 0,
+                year2: item.returns?.year2 ?? 0,
+                year3: item.returns?.year3 ?? 0,
+                year5: item.returns?.year5 ?? 0,
+                inception: item.returns?.inception ?? 0,
+            },
+          };
+        }));
+      }
+
+      // 3. Market Status
+      const marketRes = await fetch("/api/market/status");
+      const marketData = await marketRes.json().catch(() => null);
+      if (marketData?.data) setMarketStatus(marketData.data);
+
+      // 4. Fetch estimates for all codes
+      // estimates are handled in a separate polling effect
+
+    } catch (e) {
+      console.error(e);
+      toast.error("数据加载失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fetchAllEstimates = async (codes: string[], codeNameMap: Record<string, string>) => {
+    if (codes.length === 0) return;
+    setEstimateLoading(true);
+    try {
+      const res = await fetch("/api/funds/estimate/rt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codes }),
+        cache: "no-store",
+      });
+      const payload = await res.json();
+      const items = Array.isArray(payload?.data) ? payload.data : [];
+      const cache: Record<string, EstimateValue> = {};
+      let realtimeMissing = false;
+      items.forEach((item: any) => {
+        if (item?.is_realtime === false) realtimeMissing = true;
+        const estNav = item?.est_nav;
+        const estReturn = item?.est_return;
+        if (estNav && estReturn != null) {
+          cache[item.code] = {
+            nav: estNav,
+            return: estReturn,
+            source: item.source ?? "rt",
+          };
+        }
+      });
+      setEstimateCacheBySource((prev) => ({ ...prev, rt: cache }));
+      if (realtimeMissing) {
+        toast.error("实时估值不可用（Plan B）");
+      }
+    } finally {
+      setEstimateLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchData(); }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem("fund_est_cache_v1");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as EstimateCacheBySource;
+      setEstimateCacheBySource((prev) => ({ ...prev, ...parsed }));
+    } catch {
+      // ignore invalid cache
+    }
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("fund_est_cache_v1", JSON.stringify(estimateCacheBySource));
+    } catch {
+      // ignore storage errors
+    }
+  }, [estimateCacheBySource]);
+
+  const estimateCodes = useMemo(() => {
+    const codes = new Set<string>();
+    positionsBase.forEach((p) => codes.add(p.code));
+    watchlistBase.forEach((w) => codes.add(w.code));
+    return [...codes];
+  }, [positionsBase, watchlistBase]);
+
+  const estimateNameMap = useMemo(() => {
+    const out: Record<string, string> = {};
+    positionsBase.forEach((p) => {
+      if (p.code && p.name) out[p.code] = p.name;
+    });
+    watchlistBase.forEach((w) => {
+      if (w.code && w.name) out[w.code] = w.name;
+    });
+    return out;
+  }, [positionsBase, watchlistBase]);
+
+  useEffect(() => {
+    if (estimateCodes.length === 0) return;
+    fetchAllEstimates(estimateCodes, estimateNameMap);
+    const id = window.setInterval(() => fetchAllEstimates(estimateCodes, estimateNameMap), 30000);
+    return () => window.clearInterval(id);
+  }, [estimateCodes, estimateNameMap]);
+
+  const estimateMap = estimateCacheBySource[estimateSource] ?? {};
+  const watchlist = useMemo(
+    () => watchlistBase.map((w) => ({ ...w, estimate: estimateMap[w.code] })),
+    [watchlistBase, estimateMap]
+  );
+  const positions = useMemo(
+    () => positionsBase.map((p) => ({ ...p, estimate: estimateMap[p.code] })),
+    [positionsBase, estimateMap]
+  );
+
+  // Filter Logic
   const filteredWatchlist = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return watchlist.filter((item) => {
-      const matchQuery =
-        !normalized ||
-        item.name.toLowerCase().includes(normalized) ||
-        item.code.toLowerCase().includes(normalized);
-      const matchCategory =
-        activeCategory === "全部" || item.categories.includes(activeCategory);
+      const matchQuery = !normalized || item.name.toLowerCase().includes(normalized) || item.code.includes(normalized);
+      const matchCategory = activeCategory === "All" || item.categories.includes(activeCategory);
       return matchQuery && matchCategory;
     });
   }, [watchlist, query, activeCategory]);
 
-  const searchResults = useMemo(() => {
-    if (!query.trim()) {
-      return [];
-    }
-    const normalized = query.trim().toLowerCase();
-    return watchlistSeed.filter(
-      (item) =>
-        item.name.toLowerCase().includes(normalized) ||
-        item.code.toLowerCase().includes(normalized)
-    );
-  }, [query]);
-
-  const handleAddToWatchlist = (item: WatchItem) => {
-    if (watchlist.some((entry) => entry.id === item.id)) {
-      return;
-    }
-    const categorySet = new Set<WatchCategory>(["全部", ...item.categories]);
-    setWatchlist((prev) => [{ ...item, categories: Array.from(categorySet) }, ...prev]);
-  };
-
-  const handleSearch = () => {
+  // Actions
+  const handleSearch = async (val: string) => {
+    setQuery(val);
+    if (!val.trim()) { setSearchResults([]); return; }
     setIsSearching(true);
-    setTimeout(() => {
-      setIsSearching(false);
-    }, 600);
+    try {
+      const res = await fetch(`/api/funds/search?q=${encodeURIComponent(val)}`);
+      const data = await res.json();
+      if (data?.ok && Array.isArray(data?.data)) {
+        setSearchResults(data.data.map((i: any) => ({ id: i.code, name: i.name, code: i.code })));
+      }
+    } finally { setIsSearching(false); }
   };
 
-  const handleRemoveFromWatchlist = (id: string) => {
-    setWatchlist((prev) => prev.filter((item) => item.id !== id));
-  };
-
-  const handleStartEdit = (position: Position) => {
-    setEditPositionId(position.id);
-    setDraftAmount(position.amount.toString());
-  };
-
-  const handleCancelEdit = () => {
-    setEditPositionId(null);
-    setDraftAmount("");
-  };
-
-  const handleSaveEdit = (position: Position) => {
-    const amount = Number(draftAmount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return;
+  const addToWatchlist = async (item: SearchItem) => {
+    if (isAdding) return;
+    setIsAdding(true);
+    try {
+      const res = await fetch("/api/watchlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: item.code, name: item.name }),
+      });
+      if (!res.ok) throw new Error("Failed");
+      toast.success(`已添加 ${item.name}`);
+      fetchData(); // Refresh all
+    } catch {
+      toast.error("添加失败");
+    } finally {
+      setIsAdding(false);
     }
-    const today = new Date().toISOString().slice(0, 10);
-    setPositions((prev) =>
-      prev.map((item) => {
-        if (item.id !== position.id) return item;
-        const delta = amount - item.amount;
-        return {
-          ...item,
-          amount,
-          entryNav: item.nav,
-          lastInputDate: today,
-          lastDelta: delta,
-          status: amount === 0 ? "已清仓" : "持有",
-        };
-      })
-    );
-    setEditPositionId(null);
-    setDraftAmount("");
   };
 
-  const handleDeletePosition = (id: string) => {
-    setPositions((prev) => prev.filter((item) => item.id !== id));
+  const removeWatchlist = async (code: string) => {
+    await fetch(`/api/watchlist/${code}`, { method: "DELETE" });
+    fetchData();
   };
 
-  const handleCreatePosition = () => {
-    const amount = Number(newPosition.amount);
-    const nav = Number(newPosition.nav);
-    if (!newPosition.name || !newPosition.code || !Number.isFinite(amount) || amount <= 0) {
-      return;
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    setPositions((prev) => [
-      {
-        id: `p-${Date.now()}`,
-        name: newPosition.name,
-        code: newPosition.code,
-        amount,
-        nav: Number.isFinite(nav) && nav > 0 ? nav : 1.0,
-        dailyChange: 0.002,
-        totalChange: 0.012,
-        entryNav: Number.isFinite(nav) && nav > 0 ? nav : 1.0,
-        lastInputDate: today,
-        updatedAt: `${today} 15:00`,
-        updatedToday: true,
-        lastDelta: amount,
-        status: "持有",
-      },
-      ...prev,
-    ]);
-    setNewPosition({ name: "", code: "", amount: "", nav: "" });
-    setNewPositionOpen(false);
+  const updatePosition = async (code: string, amount: number) => {
+    await fetch("/api/positions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, amount }),
+    });
+    fetchData();
   };
 
-  const handleClearPosition = (position: Position) => {
-    const today = new Date().toISOString().slice(0, 10);
-    setPositions((prev) =>
-      prev.map((item) =>
-        item.id === position.id
-          ? {
-              ...item,
-              amount: 0,
-              lastDelta: -item.amount,
-              status: "已清仓",
-              lastInputDate: today,
-              updatedAt: `${today} 15:00`,
-            }
-          : item
-      )
-    );
+  const createPosition = async (data: { code: string, amount: number, nav: number }) => {
+    const entryNav = data.nav > 0 ? data.nav : undefined;
+    await fetch("/api/positions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: data.code, amount: data.amount, cost: entryNav, units: entryNav ? data.amount / entryNav : undefined }),
+    });
+    fetchData();
   };
 
-  const handleRefreshPortfolio = () => {
-    setIsPortfolioLoading(true);
-    setTimeout(() => {
-      setIsPortfolioLoading(false);
-    }, 800);
+  const deletePosition = async (code: string) => {
+    await fetch(`/api/positions/${code}`, { method: "DELETE" });
+    fetchData();
   };
+
+  return {
+    activeCategory, setActiveCategory,
+    estimateSource, setEstimateSource,
+    query, handleSearch,
+    searchResults, isSearching,
+    watchlist: filteredWatchlist,
+    positions,
+    marketStatus,
+    isLoading,
+    isEstimateLoading: estimateLoading,
+    isAdding,
+    addToWatchlist,
+    removeWatchlist,
+    updatePosition,
+    createPosition,
+    deletePosition,
+    refresh: fetchData,
+  };
+}
+
+// --- Main Page Component ---
+
+export default function WatchlistPage() {
+  const logic = useWatchlistLogic();
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="rounded-2xl border border-zinc-200/60 bg-gradient-to-br from-white via-white to-orange-50/60 p-6 shadow-sm dark:border-zinc-800/60 dark:from-zinc-900 dark:via-zinc-900 dark:to-orange-950/30">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-orange-500/80">
-              Watchlist
-            </p>
-            <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
-              自选中心
-            </h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              自选、搜索与持仓在同一视图内协作，所有变化从当天开始计算收益。
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge className="bg-orange-500/10 text-orange-500">今日 2 条更新</Badge>
-            <Badge className="bg-zinc-900/5 text-zinc-500 dark:bg-white/5">
-              已同步 15:02
-            </Badge>
-          </div>
+    <div className="min-h-screen space-y-6 bg-zinc-50/50 p-4 dark:bg-black lg:p-8">
+      {/* Header Section */}
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+            投资组合
+          </h1>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            {logic.marketStatus?.latest_trading_date 
+              ? `数据更新至 ${logic.marketStatus.latest_trading_date}` 
+              : "正在同步市场数据..."}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+            <DialogAddPosition onCreate={logic.createPosition} />
+            <Button variant="outline" size="sm" onClick={logic.refresh} disabled={logic.isLoading} className="gap-2">
+                <RefreshCw className={cn("size-4", logic.isLoading && "animate-spin")} />
+                刷新
+            </Button>
         </div>
       </div>
 
-      <Card className="border-zinc-200/70 bg-white/70 shadow-sm backdrop-blur-sm dark:border-zinc-800/70 dark:bg-zinc-950/40">
-        <CardHeader className="flex flex-col gap-4 border-b border-zinc-100/80 pb-4 dark:border-zinc-800/60">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                搜索组件
-              </CardTitle>
-              <CardDescription className="text-xs">
-                输入基金名称或代码，快速加入自选列表。
-              </CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={handleRefreshPortfolio}>
-                刷新
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="gap-1"
-                onClick={() => setNewPositionOpen((prev) => !prev)}
-              >
-                <Plus className="size-4" />
-                新增持仓
-              </Button>
-            </div>
-          </div>
-          <div className="flex flex-col gap-2 md:flex-row md:items-center">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-400" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="输入基金名称 / 代码"
-                className="pl-9"
-              />
-            </div>
-            <Button variant="default" className="gap-2" onClick={handleSearch}>
-              <Plus className="size-4" />
-              立即搜索
-            </Button>
-          </div>
-          {newPositionOpen && (
-            <div className="rounded-xl border border-dashed border-zinc-200/80 bg-white/70 p-4 dark:border-zinc-800/60 dark:bg-zinc-900/60">
-              <div className="grid gap-3 md:grid-cols-[1.2fr_0.8fr_0.8fr_0.6fr_auto]">
-                <Input
-                  value={newPosition.name}
-                  onChange={(event) =>
-                    setNewPosition((prev) => ({ ...prev, name: event.target.value }))
-                  }
-                  placeholder="基金名称"
-                />
-                <Input
-                  value={newPosition.code}
-                  onChange={(event) =>
-                    setNewPosition((prev) => ({ ...prev, code: event.target.value }))
-                  }
-                  placeholder="基金代号"
-                />
-                <Input
-                  value={newPosition.nav}
-                  onChange={(event) =>
-                    setNewPosition((prev) => ({ ...prev, nav: event.target.value }))
-                  }
-                  placeholder="净值（当天）"
-                />
-                <Input
-                  value={newPosition.amount}
-                  onChange={(event) =>
-                    setNewPosition((prev) => ({ ...prev, amount: event.target.value }))
-                  }
-                  placeholder="持有金额"
-                />
-                <div className="flex items-center gap-2">
-                  <Button size="sm" onClick={handleCreatePosition}>
-                    保存
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setNewPositionOpen(false)}>
-                    取消
-                  </Button>
-                </div>
-              </div>
-              <p className="mt-2 text-xs text-zinc-500">
-                当天录入持有金额后，从当天开始计算收益，并自动加减仓。
-              </p>
-            </div>
-          )}
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 lg:grid-cols-[1.1fr_0.9fr]">
-            <div className="rounded-xl border border-zinc-100/80 bg-white/80 p-4 dark:border-zinc-800/60 dark:bg-zinc-900/60">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                    搜索结果
-                  </h3>
-                  <p className="text-xs text-zinc-500">
-                    {query ? `找到 ${searchResults.length} 条匹配` : "输入关键字开始搜索"}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1 text-xs text-zinc-400">
-                  <ChevronDown className="size-4" />
-                  最近
-                </div>
-              </div>
-              <div className="mt-3 space-y-2">
-                {isSearching
-                  ? Array.from({ length: 3 }).map((_, idx) => (
-                      <div
-                        key={`skeleton-${idx}`}
-                        className="flex items-center justify-between rounded-lg border border-dashed border-zinc-200 bg-white/80 px-3 py-3"
-                      >
-                        <div className="space-y-2">
-                          <div className="h-3 w-40 rounded-full bg-zinc-200/70" />
-                          <div className="h-2 w-20 rounded-full bg-zinc-200/60" />
-                        </div>
-                        <div className="h-8 w-20 rounded-md bg-zinc-200/70" />
-                      </div>
-                    ))
-                  : (searchResults.length ? searchResults : watchlistSeed.slice(0, 2)).map(
-                      (item) => (
-                        <div
-                          key={item.id}
-                          className="flex items-center justify-between rounded-lg border border-zinc-100 bg-white px-3 py-2 text-sm shadow-sm dark:border-zinc-800 dark:bg-zinc-950/60"
-                        >
-                          <div>
-                            <div className="font-medium text-zinc-800 dark:text-zinc-100">
-                              {item.name}
-                            </div>
-                            <div className="text-xs text-zinc-500">{item.code}</div>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => handleAddToWatchlist(item)}
-                          >
-                            加入自选
-                          </Button>
-                        </div>
-                      )
-                    )}
-              </div>
-            </div>
+      {/* Stats Grid */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <StatCard 
+            title="自选基金" 
+            value={logic.watchlist.length} 
+            icon={LayoutDashboard} 
+            subValue="关注标的"
+        />
+        <StatCard 
+            title="当前持仓" 
+            value={logic.positions.filter(p => p.status === "Held").length} 
+            icon={Wallet} 
+            subValue={`${logic.positions.filter(p => p.updatedToday).length} 今日已更新`}
+        />
+        <StatCard 
+            title="近一周收益(中位数)" 
+            value={<TrendValue value={0.012} showIcon />} 
+            icon={TrendingUp} 
+        />
+        <StatCard 
+            title="今年来收益(中位数)" 
+            value={<TrendValue value={-0.034} showIcon />} 
+            icon={TrendingUp} 
+        />
+      </div>
 
-            <div className="rounded-xl border border-zinc-100/80 bg-gradient-to-br from-zinc-50 via-white to-orange-50 p-4 dark:border-zinc-800/60 dark:from-zinc-950 dark:via-zinc-900 dark:to-orange-950/20">
-              <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                自选摘要
-              </h3>
-              <p className="text-xs text-zinc-500">快速了解自选构成与收益分布。</p>
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                <div className="rounded-lg border border-zinc-200/70 bg-white/80 p-3 dark:border-zinc-800/70 dark:bg-zinc-900/70">
-                  <p className="text-xs text-zinc-400">自选数量</p>
-                  <p className="text-lg font-semibold text-zinc-800 dark:text-zinc-100">
-                    {watchlist.length}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-zinc-200/70 bg-white/80 p-3 dark:border-zinc-800/70 dark:bg-zinc-900/70">
-                  <p className="text-xs text-zinc-400">持有标的</p>
-                  <p className="text-lg font-semibold text-zinc-800 dark:text-zinc-100">
-                    {watchlist.filter((item) => item.categories.includes("持有")).length}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-zinc-200/70 bg-white/80 p-3 dark:border-zinc-800/70 dark:bg-zinc-900/70">
-                  <p className="text-xs text-zinc-400">近一周中位数</p>
-                  <p className="text-lg font-semibold text-emerald-500">+1.20%</p>
-                </div>
-                <div className="rounded-lg border border-zinc-200/70 bg-white/80 p-3 dark:border-zinc-800/70 dark:bg-zinc-900/70">
-                  <p className="text-xs text-zinc-400">近一月中位数</p>
-                  <p className="text-lg font-semibold text-orange-500">-0.30%</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      {/* Main Content Area */}
+      <div className="grid gap-6 lg:grid-cols-12">
+        
+        {/* Left Column: Search & Quick Watch */}
+        <div className="space-y-6 lg:col-span-3">
+             <SearchPanel 
+                query={logic.query} 
+                onSearch={logic.handleSearch} 
+                results={logic.searchResults}
+                isSearching={logic.isSearching}
+                onAdd={logic.addToWatchlist}
+                isAdding={logic.isAdding}
+             />
+        </div>
 
-      <Tabs value={activeCategory} onValueChange={(value) => setActiveCategory(value as WatchCategory)}>
-        <TabsList variant="line" className="border-b border-zinc-200/70 pb-2 dark:border-zinc-800/70">
-          {categories.map((category) => (
-            <TabsTrigger key={category} value={category} className="text-sm">
-              {category}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        <TabsContent value={activeCategory}>
-          <div className="grid gap-6 lg:grid-cols-[1.45fr_1fr]">
-            <Card className="border-zinc-200/70 bg-white/70 shadow-sm dark:border-zinc-800/70 dark:bg-zinc-950/40">
-              <CardHeader className="border-b border-zinc-100/80 pb-4 dark:border-zinc-800/60">
-                <CardTitle className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                  自选列表
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  同一单元格内展示“基金名称/基金代号”、“净值/日期”等双行信息。
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="px-0">
-                <div className="overflow-x-auto">
-                  <div className="min-w-[1200px]">
-                    <div className="grid grid-cols-[1.3fr_0.8fr_repeat(11,0.7fr)_0.7fr] gap-2 border-b border-zinc-100 px-6 py-3 text-[11px] font-semibold text-zinc-400 dark:border-zinc-800/60">
-                      <div>基金名称 / 代码</div>
-                      <div className="text-right">净值（当天）</div>
-                      <div className="text-right">添加后收益</div>
-                      <div className="text-right">近一周</div>
-                      <div className="text-right">近一月</div>
-                      <div className="text-right">近三月</div>
-                      <div className="text-right">近六月</div>
-                      <div className="text-right">今年来</div>
-                      <div className="text-right">近一年</div>
-                      <div className="text-right">近二年</div>
-                      <div className="text-right">近三年</div>
-                      <div className="text-right">近五年</div>
-                      <div className="text-right">成立来</div>
-                      <div className="text-right">操作</div>
+        {/* Right Column: Data Tables */}
+        <div className="lg:col-span-9">
+            <Tabs defaultValue="watchlist" className="w-full">
+                <div className="mb-4 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+                    <TabsList className="w-full justify-start sm:w-auto">
+                        <TabsTrigger value="watchlist">自选监控</TabsTrigger>
+                        <TabsTrigger value="positions">持仓管理</TabsTrigger>
+                    </TabsList>
+                    
+                    <div className="flex flex-wrap items-center gap-4">
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-zinc-500">Source:</span>
+                            <Tabs value={logic.estimateSource} onValueChange={(v) => logic.setEstimateSource(v as any)}>
+                                <TabsList className="h-8">
+                                    <TabsTrigger value="rt">Plan B</TabsTrigger>
+                                </TabsList>
+                            </Tabs>
+                            {logic.isEstimateLoading && <Loader2 className="size-3 animate-spin text-zinc-400" />}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-zinc-500">Category:</span>
+                            <Select value={logic.activeCategory} onValueChange={(v) => logic.setActiveCategory(v as any)}>
+                                <SelectTrigger className="h-8 w-[100px]">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                                </SelectContent>
+                            </Select>
+                        </div>
                     </div>
-                    <ScrollArea className="h-[420px]">
-                      <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60">
-                    {filteredWatchlist.map((item) => (
-                      <div
-                        key={item.id}
-                        className="grid grid-cols-[1.3fr_0.8fr_repeat(11,0.7fr)_0.7fr] gap-2 px-6 py-4 text-xs text-zinc-600 transition hover:bg-zinc-50/80 dark:text-zinc-300 dark:hover:bg-zinc-900/60"
-                      >
-                        <div className="flex flex-col">
-                          <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                            {item.name}
-                          </span>
-                          <span className="text-[11px] text-zinc-400">{item.code}</span>
-                        </div>
-                        <div className="flex flex-col text-right">
-                          <span className="font-mono text-sm text-zinc-800 dark:text-zinc-100">
-                            {fmtNav(item.nav)}
-                          </span>
-                          <span className="text-[10px] text-zinc-400">{item.navDate}</span>
-                        </div>
-                        <ReturnCell value={item.sinceAdded} />
-                        <ReturnCell value={item.returns.week} />
-                        <ReturnCell value={item.returns.month} />
-                        <ReturnCell value={item.returns.quarter} />
-                        <ReturnCell value={item.returns.halfYear} />
-                        <ReturnCell value={item.returns.ytd} />
-                        <ReturnCell value={item.returns.year1} />
-                        <ReturnCell value={item.returns.year2} />
-                        <ReturnCell value={item.returns.year3} />
-                        <ReturnCell value={item.returns.year5} />
-                        <ReturnCell value={item.returns.inception} />
-                        <div className="flex items-center justify-end gap-2">
-                          <Button
-                            size="icon-xs"
-                            variant="ghost"
-                            onClick={() => handleRemoveFromWatchlist(item.id)}
-                          >
-                            <X className="size-3" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                    {!filteredWatchlist.length && (
-                      <div className="px-6 py-10 text-center text-sm text-zinc-400">
-                        暂无匹配的自选记录
-                      </div>
-                    )}
-                      </div>
-                    </ScrollArea>
-                  </div>
                 </div>
-              </CardContent>
-            </Card>
 
-            <Card className="border-zinc-200/70 bg-white/70 shadow-sm dark:border-zinc-800/70 dark:bg-zinc-950/40">
-              <CardHeader className="border-b border-zinc-100/80 pb-4 dark:border-zinc-800/60">
-                <CardTitle className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                  持仓列表
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  名称/持有金额、日收益、持有收益、累计收益与更新提示。
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="px-0">
-                <div className="grid grid-cols-[1.3fr_0.8fr_0.8fr_0.8fr_0.8fr] gap-2 border-b border-zinc-100 px-6 py-3 text-[11px] font-semibold text-zinc-400 dark:border-zinc-800/60">
-                  <div>名称 / 持有金额</div>
-                  <div className="text-right">日收益</div>
-                  <div className="text-right">持有收益</div>
-                  <div className="text-right">累计收益</div>
-                  <div className="text-right">今日更新</div>
-                </div>
-                <ScrollArea className="h-[420px]">
-                  <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60">
-                    {isPortfolioLoading
-                      ? Array.from({ length: 3 }).map((_, idx) => (
-                          <div
-                            key={`portfolio-skeleton-${idx}`}
-                            className="grid grid-cols-[1.3fr_0.8fr_0.8fr_0.8fr_0.8fr] gap-2 px-6 py-4"
-                          >
-                            <div className="space-y-2">
-                              <div className="h-3 w-32 rounded-full bg-zinc-200/70" />
-                              <div className="h-2 w-20 rounded-full bg-zinc-200/60" />
-                            </div>
-                            <div className="h-8 rounded-md bg-zinc-200/60" />
-                            <div className="h-8 rounded-md bg-zinc-200/60" />
-                            <div className="h-8 rounded-md bg-zinc-200/60" />
-                            <div className="h-8 rounded-md bg-zinc-200/60" />
-                          </div>
-                        ))
-                      : positions.map((position) => {
-                      const dailyProfit = position.amount * position.dailyChange;
-                      const holdingProfit = position.amount * (position.nav / position.entryNav - 1);
-                      const totalProfit = position.amount * position.totalChange;
-                      const isEditing = editPositionId === position.id;
-                      return (
-                        <div
-                          key={position.id}
-                          className="grid grid-cols-[1.3fr_0.8fr_0.8fr_0.8fr_0.8fr] gap-2 px-6 py-4 text-xs text-zinc-600 transition hover:bg-zinc-50/80 dark:text-zinc-300 dark:hover:bg-zinc-900/60"
-                        >
-                          <div className="flex flex-col">
-                            <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                              {position.name}
-                            </span>
-                            <div className="flex items-center gap-2 text-[11px] text-zinc-400">
-                              <span>{position.code}</span>
-                              <Badge
-                                className={cn(
-                                  "bg-zinc-200/60 text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300",
-                                  position.status === "已清仓" &&
-                                    "bg-orange-500/10 text-orange-500"
-                                )}
-                              >
-                                {position.status}
-                              </Badge>
-                              {!isEditing ? (
-                                <span className="font-mono text-zinc-500">
-                                  {fmtMoney(position.amount).replace("¥", "￥")}
-                                </span>
-                              ) : (
-                                <Input
-                                  value={draftAmount}
-                                  onChange={(event) => setDraftAmount(event.target.value)}
-                                  className="h-7 max-w-[120px]"
-                                />
-                              )}
-                              {position.lastDelta ? (
-                                <Badge
-                                  className={cn(
-                                    "bg-emerald-500/10 text-emerald-500",
-                                    position.lastDelta < 0 && "bg-orange-500/10 text-orange-500"
-                                  )}
-                                >
-                                  {position.lastDelta > 0 ? "加仓" : "减仓"} {fmtMoney(Math.abs(position.lastDelta))}
-                                </Badge>
-                              ) : null}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col text-right">
-                            <span
-                              className={cn(
-                                "font-mono text-sm",
-                                dailyProfit >= 0 ? "text-emerald-500" : "text-orange-500"
-                              )}
-                            >
-                              {fmtMoney(dailyProfit)}
-                            </span>
-                            <span className="text-[10px] text-zinc-400">
-                              {fmtPct(position.dailyChange)}
-                            </span>
-                          </div>
-
-                          <div className="flex flex-col text-right">
-                            <span
-                              className={cn(
-                                "font-mono text-sm",
-                                holdingProfit >= 0 ? "text-emerald-500" : "text-orange-500"
-                              )}
-                            >
-                              {fmtMoney(holdingProfit)}
-                            </span>
-                            <span className="text-[10px] text-zinc-400">
-                              录入 {position.lastInputDate}
-                            </span>
-                          </div>
-
-                          <div className="flex flex-col text-right">
-                            <span
-                              className={cn(
-                                "font-mono text-sm",
-                                totalProfit >= 0 ? "text-emerald-500" : "text-orange-500"
-                              )}
-                            >
-                              {fmtMoney(totalProfit)}
-                            </span>
-                            <span className="text-[10px] text-zinc-400">
-                              {fmtPct(position.totalChange)}
-                            </span>
-                          </div>
-
-                          <div className="flex flex-col items-end gap-2">
-                            <div className="flex items-center gap-1 text-[10px] text-zinc-500">
-                              <span
-                                className={cn(
-                                  "inline-flex h-2 w-2 rounded-full",
-                                  position.updatedToday
-                                    ? "bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.6)]"
-                                    : "bg-orange-400 shadow-[0_0_8px_rgba(249,115,22,0.5)]"
-                                )}
-                              />
-                              {position.updatedToday ? "今日已更新" : "待更新"}
-                            </div>
-                            <span className="text-[10px] text-zinc-400">
-                              {position.updatedAt}
-                            </span>
-                            <div className="flex items-center gap-2">
-                              {!isEditing ? (
-                                <>
-                                  <Button size="icon-xs" variant="ghost" onClick={() => handleStartEdit(position)}>
-                                    <Pencil className="size-3" />
-                                  </Button>
-                                  <Button
-                                    size="icon-xs"
-                                    variant="ghost"
-                                    onClick={() => handleDeletePosition(position.id)}
-                                  >
-                                    <Trash2 className="size-3" />
-                                  </Button>
-                                  <Button
-                                    size="xs"
-                                    variant="ghost"
-                                    onClick={() => handleClearPosition(position)}
-                                  >
-                                    清仓
-                                  </Button>
-                                </>
-                              ) : (
-                                <>
-                                  <Button size="icon-xs" variant="secondary" onClick={() => handleSaveEdit(position)}>
-                                    <Check className="size-3" />
-                                  </Button>
-                                  <Button size="icon-xs" variant="ghost" onClick={handleCancelEdit}>
-                                    <X className="size-3" />
-                                  </Button>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {!positions.length && (
-                      <div className="px-6 py-10 text-center text-sm text-zinc-400">
-                        暂无持仓，点击“新增持仓”开始录入。
-                      </div>
-                    )}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-      </Tabs>
+                <TabsContent value="watchlist" className="space-y-4">
+                    <WatchlistTable 
+                        data={logic.watchlist} 
+                        isLoading={logic.isLoading} 
+                        onRemove={logic.removeWatchlist} 
+                    />
+                </TabsContent>
+                
+                <TabsContent value="positions" className="space-y-4">
+                    <PositionsTable 
+                        data={logic.positions} 
+                        isLoading={logic.isLoading}
+                        onUpdate={logic.updatePosition}
+                        onDelete={logic.deletePosition}
+                    />
+                </TabsContent>
+            </Tabs>
+        </div>
+      </div>
     </div>
   );
 }
 
-function ReturnCell({ value }: { value: number }) {
-  const isUp = value >= 0;
-  return (
-    <div className="flex flex-col items-end">
-      <span className={cn("font-mono text-sm", isUp ? "text-emerald-500" : "text-orange-500")}>
-        {fmtPct(value)}
-      </span>
-    </div>
-  );
+// --- Component: Search Panel ---
+
+function SearchPanel({ query, onSearch, results, isSearching, onAdd, isAdding }: any) {
+    return (
+        <Card>
+            <CardHeader className="pb-3">
+                <CardTitle className="text-base">添加基金</CardTitle>
+                <CardDescription>搜索基金名称或代码</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+                <div className="relative">
+                    <Search className="absolute left-2.5 top-2.5 size-4 text-zinc-500" />
+                    <Input 
+                        placeholder="输入代码/名称..." 
+                        className="pl-9" 
+                        value={query}
+                        onChange={(e) => onSearch(e.target.value)}
+                    />
+                </div>
+                
+                <div className="max-h-[300px] overflow-y-auto rounded-md border border-zinc-100 bg-zinc-50/50 p-2 dark:border-zinc-800 dark:bg-zinc-900/50">
+                    {isSearching ? (
+                        <div className="flex items-center justify-center py-4 text-zinc-500">
+                            <Loader2 className="mr-2 size-4 animate-spin" /> 搜索中...
+                        </div>
+                    ) : results.length > 0 ? (
+                        <div className="space-y-1">
+                            {results.map((item: any) => (
+                                <div key={item.id} className="flex items-center justify-between rounded px-2 py-2 hover:bg-white dark:hover:bg-zinc-800">
+                                    <div className="overflow-hidden">
+                                        <div className="truncate text-sm font-medium">{item.name}</div>
+                                        <div className="text-xs text-zinc-500">{item.code}</div>
+                                    </div>
+                                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => onAdd(item)} disabled={isAdding}>
+                                        <Plus className="size-4" />
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="py-4 text-center text-xs text-zinc-400">
+                            {query ? "未找到相关基金" : "输入关键词开始搜索"}
+                        </div>
+                    )}
+                </div>
+            </CardContent>
+        </Card>
+    );
+}
+
+// --- Component: Watchlist Table ---
+
+function WatchlistTable({ data, isLoading, onRemove }: { data: WatchItem[], isLoading: boolean, onRemove: (code: string) => void }) {
+    if (isLoading && data.length === 0) {
+        return (
+            <Card className="overflow-hidden border-zinc-200 dark:border-zinc-800">
+                <div className="p-6">
+                    <div className="space-y-3 animate-pulse">
+                        {Array.from({ length: 6 }).map((_, i) => (
+                            <div key={i} className="h-4 rounded bg-zinc-200/70 dark:bg-zinc-800/70" />
+                        ))}
+                    </div>
+                </div>
+            </Card>
+        );
+    }
+
+    return (
+        <Card className="overflow-hidden border-zinc-200 dark:border-zinc-800">
+            <ScrollArea className="w-full whitespace-nowrap">
+                <div className="w-full min-w-[1120px]">
+                    {/* Table Header */}
+                    <div
+                        className="grid items-center border-b border-zinc-100 bg-zinc-50/50 px-4 py-3 text-xs font-medium text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/50"
+                        style={{ gridTemplateColumns: "240px 120px 120px 120px 100px 100px 100px 100px 100px 60px" }}
+                    >
+                        <div className="w-[240px] shrink-0">Fund / Code</div>
+                        <div className="w-[120px] shrink-0 text-right">Latest NAV</div>
+                        <div className="w-[120px] shrink-0 text-right">Est. %</div>
+                        <div className="w-[120px] shrink-0 text-right">Since Added</div>
+                        <div className="w-[100px] shrink-0 text-right">1W</div>
+                        <div className="w-[100px] shrink-0 text-right">1M</div>
+                        <div className="w-[100px] shrink-0 text-right">3M</div>
+                        <div className="w-[100px] shrink-0 text-right">YTD</div>
+                        <div className="w-[100px] shrink-0 text-right">1Y</div>
+                        <div className="w-[60px] shrink-0"></div>
+                    </div>
+                    {/* Table Body */}
+                    <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                        {data.map((item) => (
+                            <div
+                                key={item.id}
+                                className="group grid items-center px-4 py-3 text-sm transition-colors hover:bg-zinc-50/80 dark:hover:bg-zinc-900/50"
+                                style={{ gridTemplateColumns: "240px 120px 120px 120px 100px 100px 100px 100px 100px 60px" }}
+                            >
+                                <div className="w-[240px] shrink-0">
+                                    <div className="truncate font-medium text-zinc-900 dark:text-zinc-100">{item.name}</div>
+                                    <div className="flex items-center gap-2 text-xs text-zinc-500">
+                                        <span>{item.code}</span>
+                                        {item.categories.includes("Held") && <Badge variant="outline" className="h-4 border-orange-200 px-1 py-0 text-[9px] text-orange-600">持</Badge>}
+                                    </div>
+                                </div>
+                                <div className="w-[120px] shrink-0 text-right">
+                                    <div className="font-mono">{fmtNav(item.nav)}</div>
+                                    <div className="text-[10px] text-zinc-400">{item.navDate}</div>
+                                </div>
+                                <div className="w-[120px] shrink-0 text-right">
+                                    {item.estimate ? (
+                                        <>
+                                            <div className={cn("font-mono", getTrendColor(item.estimate.return))}>{fmtPct(item.estimate.return)}</div>
+                                            <div className="text-[10px] text-zinc-400">{item.estimate.source === 'model' ? '模型' : '东财'}</div>
+                                        </>
+                                    ) : (
+                                        <div className="text-xs text-zinc-300">--</div>
+                                    )}
+                                </div>
+                                <div className="w-[120px] shrink-0 text-right">
+                                    <TrendValue value={item.sinceAdded} className="justify-end" />
+                                </div>
+                                <div className="w-[100px] shrink-0 text-right"><TrendValue value={item.returns.week} className="justify-end" /></div>
+                                <div className="w-[100px] shrink-0 text-right"><TrendValue value={item.returns.month} className="justify-end" /></div>
+                                <div className="w-[100px] shrink-0 text-right"><TrendValue value={item.returns.quarter} className="justify-end" /></div>
+                                <div className="w-[100px] shrink-0 text-right"><TrendValue value={item.returns.ytd} className="justify-end" /></div>
+                                <div className="w-[100px] shrink-0 text-right"><TrendValue value={item.returns.year1} className="justify-end" /></div>
+                                <div className="w-[60px] shrink-0 text-right flex justify-end">
+                                    <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-400 opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100" onClick={() => onRemove(item.code)}>
+                                        <Trash2 className="size-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        ))}
+                        {data.length === 0 && <div className="py-12 text-center text-sm text-zinc-400">暂无数据</div>}
+                    </div>
+                </div>
+                <ScrollBar orientation="horizontal" />
+            </ScrollArea>
+        </Card>
+    );
+}
+
+// --- Component: PositionsTable ---
+
+function PositionsTable({ data, isLoading, onUpdate, onDelete }: { data: Position[], isLoading: boolean, onUpdate: any, onDelete: any }) {
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const [editAmount, setEditAmount] = useState("");
+
+    const startEdit = (p: Position) => {
+        setEditingId(p.id);
+        setEditAmount(String(p.amount));
+    };
+
+    const saveEdit = (p: Position) => {
+        const val = parseFloat(editAmount);
+        if (!isNaN(val)) onUpdate(p.code, val);
+        setEditingId(null);
+    };
+
+    if (isLoading && data.length === 0) {
+        return (
+            <Card className="overflow-hidden border-zinc-200 dark:border-zinc-800">
+                <div className="p-6">
+                    <div className="space-y-3 animate-pulse">
+                        {Array.from({ length: 6 }).map((_, i) => (
+                            <div key={i} className="h-4 rounded bg-zinc-200/70 dark:bg-zinc-800/70" />
+                        ))}
+                    </div>
+                </div>
+            </Card>
+        );
+    }
+
+    return (
+        <Card className="overflow-hidden border-zinc-200 dark:border-zinc-800">
+             <ScrollArea className="w-full whitespace-nowrap">
+                <div className="w-full min-w-[1140px]">
+                    <div
+                        className="grid items-center border-b border-zinc-100 bg-zinc-50/50 px-4 py-3 text-xs font-medium text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/50"
+                        style={{ gridTemplateColumns: "220px 140px 120px 120px 120px 120px 120px 100px 1fr" }}
+                    >
+                        <div className="w-[220px] shrink-0">Fund</div>
+                        <div className="w-[140px] shrink-0 text-right">Amount</div>
+                        <div className="w-[120px] shrink-0 text-right">Latest NAV</div>
+                        <div className="w-[120px] shrink-0 text-right">Est. %</div>
+                        <div className="w-[120px] shrink-0 text-right">Daily PnL</div>
+                        <div className="w-[120px] shrink-0 text-right">Holding PnL</div>
+                        <div className="w-[120px] shrink-0 text-right">Total PnL</div>
+                        <div className="w-[100px] shrink-0 text-right">Status</div>
+                        <div className="flex-1"></div>
+                    </div>
+                    <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                        {data.map((p) => {
+                            const dailyPnl = p.dailyProfit ?? (p.dailyChange ? p.amount * p.dailyChange : 0);
+                            const holdingPnl = p.holdingProfit ?? (p.entryNav ? p.amount * (p.nav / p.entryNav - 1) : 0);
+                            const totalPnl = p.totalProfit ?? holdingPnl;
+
+                            return (
+                                <div
+                                    key={p.id}
+                                    className="group grid items-center px-4 py-4 text-sm hover:bg-zinc-50/80 dark:hover:bg-zinc-900/50"
+                                    style={{ gridTemplateColumns: "220px 140px 120px 120px 120px 120px 120px 100px 1fr" }}
+                                >
+                                    <div className="w-[220px] shrink-0">
+                                        <div className="font-medium text-zinc-900 dark:text-zinc-100">{p.name}</div>
+                                        <div className="text-xs text-zinc-500">{p.code}</div>
+                                    </div>
+                                    <div className="w-[140px] shrink-0 text-right">
+                                        {editingId === p.id ? (
+                                            <div className="flex items-center justify-end gap-1">
+                                                <Input
+                                                    value={editAmount}
+                                                    onChange={e => setEditAmount(e.target.value)}
+                                                    className="h-7 w-20 text-right text-xs"
+                                                />
+                                                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => saveEdit(p)}><Check className="size-3 text-emerald-500"/></Button>
+                                                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditingId(null)}><X className="size-3 text-zinc-500"/></Button>
+                                            </div>
+                                        ) : (
+                                            <div className="group/edit flex items-center justify-end gap-2">
+                                                <span className="font-mono">{fmtMoney(p.amount)}</span>
+                                                <Pencil className="size-3 cursor-pointer text-zinc-300 opacity-0 transition-opacity hover:text-zinc-600 group-hover/edit:opacity-100" onClick={() => startEdit(p)} />
+                                            </div>
+                                        )}
+                                        {p.lastDelta && (
+                                            <div className="mt-1 flex justify-end">
+                                                <Badge variant="secondary" className="px-1 py-0 text-[10px] font-normal text-zinc-500">
+                                                    {p.lastDelta > 0 ? "加" : "减"} {fmtMoney(Math.abs(p.lastDelta))}
+                                                </Badge>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="w-[120px] shrink-0 text-right">
+                                        <div className="font-mono text-xs">{fmtNav(p.nav)}</div>
+                                        <div className="text-[10px] text-zinc-400">官方</div>
+                                    </div>
+                                    <div className="w-[120px] shrink-0 text-right">
+                                        {p.estimate ? (
+                                            <>
+                                                <div className={cn("font-mono text-xs", getTrendColor(p.estimate.return))}>{fmtPct(p.estimate.return)}</div>
+                                                <div className="text-[10px] text-zinc-400">{p.estimate.source === 'model' ? '模型' : '东财'}</div>
+                                            </>
+                                        ) : (
+                                            <div className="text-xs text-zinc-300">--</div>
+                                        )}
+                                    </div>
+                                    <div className="w-[120px] shrink-0 text-right">
+                                        <div className={cn("font-mono", getTrendColor(dailyPnl))}>{fmtMoney(dailyPnl)}</div>
+                                        <div className="text-[10px] text-zinc-400">{fmtPct(p.dailyChange ?? 0)}</div>
+                                    </div>
+                                    <div className="w-[120px] shrink-0 text-right">
+                                        <div className={cn("font-mono", getTrendColor(holdingPnl))}>{fmtMoney(holdingPnl)}</div>
+                                    </div>
+                                    <div className="w-[120px] shrink-0 text-right">
+                                        <div className={cn("font-mono", getTrendColor(totalPnl))}>{fmtMoney(totalPnl)}</div>
+                                        <div className="text-[10px] text-zinc-400">{fmtPct(p.totalChange ?? 0)}</div>
+                                    </div>
+                                    <div className="w-[100px] shrink-0 text-right">
+                                         <Badge variant={p.updatedToday ? "default" : "secondary"} className={cn("text-[10px]", p.updatedToday ? "bg-red-500 hover:bg-red-600" : "")}>
+                                            {p.updatedToday ? "已更新" : "待更新"}
+                                         </Badge>
+                                    </div>
+                                    <div className="flex flex-1 justify-end opacity-0 transition-opacity group-hover:opacity-100">
+                                         <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-400 hover:text-red-500" onClick={() => onDelete(p.code)}>
+                                            <Trash2 className="size-4" />
+                                         </Button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+                 <ScrollBar orientation="horizontal" />
+            </ScrollArea>
+        </Card>
+    );
+}
+
+// --- Component: Dialog Add Position ---
+
+function DialogAddPosition({ onCreate }: { onCreate: (data: any) => void }) {
+    const [open, setOpen] = useState(false);
+    const [form, setForm] = useState({ code: "", name: "", amount: "", nav: "" });
+
+    const handleSubmit = () => {
+        const amount = parseFloat(form.amount);
+        const nav = parseFloat(form.nav);
+        if (!form.code || isNaN(amount)) return;
+        onCreate({ ...form, amount, nav });
+        setOpen(false);
+        setForm({ code: "", name: "", amount: "", nav: "" });
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+                <Button className="gap-2 bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900">
+                    <Plus className="size-4" /> 新增持仓
+                </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[425px]">
+                <DialogHeader>
+                    <DialogTitle>录入持仓</DialogTitle>
+                    <DialogDescription>
+                        输入持有金额后，系统将从录入当天的净值开始计算收益。
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                    <div className="grid grid-cols-4 items-center gap-4">
+                        <label className="text-right text-sm font-medium">基金代码</label>
+                        <Input value={form.code} onChange={e => setForm({...form, code: e.target.value})} className="col-span-3" placeholder="如 003095" />
+                    </div>
+                    <div className="grid grid-cols-4 items-center gap-4">
+                        <label className="text-right text-sm font-medium">名称 (选填)</label>
+                        <Input value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="col-span-3" />
+                    </div>
+                    <div className="grid grid-cols-4 items-center gap-4">
+                        <label className="text-right text-sm font-medium">持有金额</label>
+                        <Input value={form.amount} onChange={e => setForm({...form, amount: e.target.value})} className="col-span-3" type="number" />
+                    </div>
+                    <div className="grid grid-cols-4 items-center gap-4">
+                        <label className="text-right text-sm font-medium">当前净值</label>
+                        <Input value={form.nav} onChange={e => setForm({...form, nav: e.target.value})} className="col-span-3" type="number" placeholder="如果不填则自动获取" />
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button type="submit" onClick={handleSubmit}>确认保存</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
 }

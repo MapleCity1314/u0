@@ -1,12 +1,16 @@
 from datetime import datetime, timezone, timedelta
+import os
 import csv
 import io
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, Query
+import pandas as pd
 from sqlalchemy.orm import Session
 
 from services.core.database import get_db
+from services.fund_nav.data import akshare_client as fund_data
 from services.logs.utils import log_event
+from services.modules.redis_cache import get_cache
 from services.users.audit import write_audit
 from services.users.config import INVITE_MAX_ACTIVE, LOCKOUT_DURATION_SEC, LOCKOUT_THRESHOLD
 from services.users.models.invite import Invite
@@ -14,6 +18,7 @@ from services.users.models.position import Position
 from services.users.models.position_event import PositionEvent
 from services.users.models.session import SessionToken
 from services.users.models.user import User
+from services.users.models.watchlist_item import WatchlistItem
 from services.users.schemas import (
     AuthResponse,
     InviteOut,
@@ -21,13 +26,24 @@ from services.users.schemas import (
     PasswordUpdate,
     PositionCreate,
     PositionOut,
+    PositionSummaryOut,
     RegisterRequest,
     UserOut,
+    WatchlistCreate,
+    WatchlistOut,
+    WatchlistSummaryOut,
 )
 from services.users.security import generate_token, hash_password, token_expires_at, verify_password
 from services.users.utils import generate_display_id, generate_invite_code, invite_expires_at, token_hash
 
 router = APIRouter()
+_redis = get_cache()
+
+
+def _cache_get_or_set(key: str, fetch, ttl: int) -> dict:
+    if _redis is not None:
+        return _redis.get_or_set(key, fetch, ttl=ttl)
+    return fetch()
 
 
 def _get_token(authorization: str | None) -> str | None:
@@ -263,11 +279,18 @@ def revoke_invite(code: str, db: Session = Depends(get_db), user: User = Depends
 
 
 @router.get("/positions", response_model=list[PositionOut])
-def list_positions(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_positions(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     rows = (
         db.query(Position)
         .filter(Position.user_id == user.id, Position.is_active.is_(True))
         .order_by(Position.created_at.desc())
+        .limit(limit)
+        .offset(offset)
         .all()
     )
     return [PositionOut.from_orm(row) for row in rows]
@@ -285,13 +308,14 @@ def upsert_position(
         .first()
     )
     if row is None:
+        now = datetime.now(timezone.utc)
         row = Position(
             user_id=user.id,
             code=payload.code,
             units=payload.units,
             cost=payload.cost,
             amount=payload.amount,
-            opened_at=payload.opened_at,
+            opened_at=payload.opened_at or now,
             source="manual",
             is_active=True,
         )
@@ -303,8 +327,10 @@ def upsert_position(
         delta_amount = payload.amount
         delta_cost = payload.cost
     else:
-        delta_units = payload.units
-        delta_amount = payload.amount
+        prev_units = row.units or 0
+        prev_amount = row.amount or 0
+        delta_units = payload.units - prev_units if payload.units is not None else None
+        delta_amount = payload.amount - prev_amount if payload.amount is not None else None
         delta_cost = payload.cost
         if payload.units is not None:
             row.units = payload.units
@@ -314,6 +340,12 @@ def upsert_position(
             row.amount = payload.amount
         if payload.opened_at is not None:
             row.opened_at = payload.opened_at
+        if row.opened_at is None and payload.amount is not None:
+            row.opened_at = datetime.now(timezone.utc)
+        if payload.amount is not None and payload.amount <= 0:
+            row.is_active = False
+            row.deleted_at = datetime.now(timezone.utc)
+        row.updated_at = datetime.now(timezone.utc)
         db.commit()
         event_type = "update"
 
@@ -440,3 +472,339 @@ def import_positions_csv(
     write_audit("position_import", "position", user_id=str(user.id), extra=f"count={imported}")
 
     return {"ok": True, "imported": imported}
+
+
+def _return_since(df: pd.DataFrame, target_date: pd.Timestamp) -> float | None:
+    if df is None or df.empty:
+        return None
+    subset = df[df["date"] <= target_date]
+    if subset.empty:
+        return None
+    last_nav = float(df["nav"].iloc[-1])
+    base_nav = float(subset["nav"].iloc[-1])
+    if base_nav <= 0:
+        return None
+    return (last_nav / base_nav) - 1.0
+
+
+def _calc_fund_returns(code: str) -> dict:
+    cache_key = f"fund:returns:{code}"
+    ttl = int(os.getenv("FUND_NAV_RETURNS_TTL_SEC", "300"))
+
+    def _compute():
+        df = fund_data.get_fund_nav_daily(code)
+        if df is None or df.empty:
+            return {"nav": None, "nav_date": None, "returns": {}}
+        df = df.sort_values("date")
+        last_date = df["date"].iloc[-1]
+        last_nav = float(df["nav"].iloc[-1])
+
+        periods = {
+            "week": 7,
+            "month": 30,
+            "quarter": 90,
+            "halfYear": 180,
+            "year1": 365,
+            "year2": 365 * 2,
+            "year3": 365 * 3,
+            "year5": 365 * 5,
+        }
+
+        returns = {}
+        for key, days in periods.items():
+            returns[key] = _return_since(df, last_date - pd.Timedelta(days=days))
+
+        ytd_start = pd.Timestamp(year=last_date.year, month=1, day=1)
+        returns["ytd"] = _return_since(df, ytd_start)
+
+        inception_nav = float(df["nav"].iloc[0])
+        if inception_nav > 0:
+            returns["inception"] = (last_nav / inception_nav) - 1.0
+        else:
+            returns["inception"] = None
+
+        return {
+            "nav": last_nav,
+            "nav_date": last_date.strftime("%Y-%m-%d"),
+            "returns": returns,
+        }
+
+    return _cache_get_or_set(cache_key, _compute, ttl=ttl)
+
+
+def _calc_last_nav_and_daily(code: str) -> tuple[float | None, str | None, float | None]:
+    cache_key = f"fund:last_nav:{code}"
+    ttl = int(os.getenv("FUND_NAV_LAST_NAV_TTL_SEC", "120"))
+
+    def _compute():
+        df = fund_data.get_fund_nav_daily(code)
+        if df is None or df.empty:
+            return {"nav": None, "nav_date": None, "daily_change": None}
+        df = df.sort_values("date")
+        last_nav = float(df["nav"].iloc[-1])
+        last_date = df["date"].iloc[-1].strftime("%Y-%m-%d")
+        if len(df) < 2:
+            return {"nav": last_nav, "nav_date": last_date, "daily_change": None}
+        prev_nav = float(df["nav"].iloc[-2])
+        if prev_nav <= 0:
+            return {"nav": last_nav, "nav_date": last_date, "daily_change": None}
+        daily_change = (last_nav / prev_nav) - 1.0
+        return {"nav": last_nav, "nav_date": last_date, "daily_change": daily_change}
+
+    payload = _cache_get_or_set(cache_key, _compute, ttl=ttl)
+    return payload["nav"], payload["nav_date"], payload["daily_change"]
+
+
+def _calc_nav_on_or_before(code: str, date_str: str) -> float | None:
+    cache_key = f"fund:nav_at:{code}:{date_str}"
+    ttl = int(os.getenv("FUND_NAV_NAV_AT_TTL_SEC", "3600"))
+
+    def _compute():
+        df = fund_data.get_fund_nav_daily(code)
+        if df is None or df.empty:
+            return {"nav": None}
+        df = df.sort_values("date")
+        target = pd.Timestamp(date_str)
+        subset = df[df["date"] <= target]
+        if subset.empty:
+            return {"nav": None}
+        nav = float(subset["nav"].iloc[-1])
+        return {"nav": nav}
+
+    payload = _cache_get_or_set(cache_key, _compute, ttl=ttl)
+    return payload["nav"]
+
+
+def _latest_trading_date() -> str:
+    cache_key = "trade:latest:CN"
+    ttl = int(os.getenv("FUND_NAV_TRADE_CAL_TTL_SEC", "300"))
+
+    def _compute():
+        return {"date": fund_data.get_latest_trading_date()}
+
+    payload = _cache_get_or_set(cache_key, _compute, ttl=ttl)
+    return payload["date"]
+
+
+def _lookup_fund_name(code: str) -> str | None:
+    cache_key = f"fund:name:{code}"
+    ttl = int(os.getenv("FUND_NAV_FUND_NAME_TTL_SEC", "3600"))
+
+    def _compute():
+        df = fund_data.get_fund_value_estimation()
+        if df is None or df.empty:
+            return {"name": None}
+        code_col = None
+        name_col = None
+        for c in df.columns:
+            if "基金代码" in c or c.lower() in ("code", "基金代码"):
+                code_col = c
+            if "基金名称" in c or c.lower() in ("name", "基金名称"):
+                name_col = c
+        if code_col is None or name_col is None:
+            return {"name": None}
+        row = df[df[code_col].astype(str) == str(code)]
+        if row.empty:
+            return {"name": None}
+        return {"name": str(row.iloc[0][name_col])}
+
+    payload = _cache_get_or_set(cache_key, _compute, ttl=ttl)
+    return payload["name"]
+
+
+@router.get("/watchlist", response_model=list[WatchlistOut])
+def list_watchlist(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    rows = (
+        db.query(WatchlistItem)
+        .filter(WatchlistItem.user_id == user.id, WatchlistItem.is_active.is_(True))
+        .order_by(WatchlistItem.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+    return [WatchlistOut.from_orm(row) for row in rows]
+
+
+@router.get("/watchlist/summary", response_model=list[WatchlistSummaryOut])
+def list_watchlist_summary(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    rows = (
+        db.query(WatchlistItem)
+        .filter(WatchlistItem.user_id == user.id, WatchlistItem.is_active.is_(True))
+        .order_by(WatchlistItem.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+    out = []
+    for row in rows:
+        payload = _calc_fund_returns(row.code)
+        since_added = None
+        if row.created_at and payload["nav"] is not None:
+            base_nav = _calc_nav_on_or_before(row.code, row.created_at.strftime("%Y-%m-%d"))
+            if base_nav and base_nav > 0:
+                since_added = float(payload["nav"]) / float(base_nav) - 1.0
+        out.append(
+            WatchlistSummaryOut(
+                id=row.id,
+                code=row.code,
+                name=row.name,
+                nav=payload["nav"],
+                nav_date=payload["nav_date"],
+                since_added=since_added,
+                returns=payload["returns"],
+            )
+        )
+    return out
+
+
+@router.post("/watchlist", response_model=WatchlistOut)
+def upsert_watchlist(
+    payload: WatchlistCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    code = payload.code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="invalid_code")
+
+    row = (
+        db.query(WatchlistItem)
+        .filter(WatchlistItem.user_id == user.id, WatchlistItem.code == code, WatchlistItem.is_active.is_(True))
+        .first()
+    )
+    if row is None:
+        row = (
+            db.query(WatchlistItem)
+            .filter(WatchlistItem.user_id == user.id, WatchlistItem.code == code, WatchlistItem.is_active.is_(False))
+            .first()
+        )
+        if row is None:
+            row = WatchlistItem(
+                user_id=user.id,
+                code=code,
+                name=payload.name,
+                is_active=True,
+            )
+            db.add(row)
+        else:
+            row.is_active = True
+            row.deleted_at = None
+            if payload.name:
+                row.name = payload.name
+        db.commit()
+        db.refresh(row)
+        write_audit("watchlist_add", "watchlist", user_id=str(user.id), resource_id=str(row.id))
+        return WatchlistOut.from_orm(row)
+
+    if payload.name:
+        row.name = payload.name
+        db.commit()
+        db.refresh(row)
+    return WatchlistOut.from_orm(row)
+
+
+@router.delete("/watchlist/{code}")
+def delete_watchlist(code: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    code = code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="invalid_code")
+    row = (
+        db.query(WatchlistItem)
+        .filter(WatchlistItem.user_id == user.id, WatchlistItem.code == code, WatchlistItem.is_active.is_(True))
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="watchlist_not_found")
+    row.is_active = False
+    row.deleted_at = datetime.now(timezone.utc)
+    db.commit()
+    write_audit("watchlist_delete", "watchlist", user_id=str(user.id), resource_id=str(row.id))
+    return {"ok": True}
+
+
+@router.get("/positions/summary", response_model=list[PositionSummaryOut])
+def list_positions_summary(
+    include_inactive: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    query = db.query(Position).filter(Position.user_id == user.id)
+    if not include_inactive:
+        query = query.filter(Position.is_active.is_(True))
+    rows = query.order_by(Position.created_at.desc()).limit(limit).offset(offset).all()
+
+    latest_trade_date = _latest_trading_date()
+    out = []
+    for row in rows:
+        nav, nav_date, daily_change = _calc_last_nav_and_daily(row.code)
+        name = _lookup_fund_name(row.code)
+        amount = row.amount
+        entry_nav = None
+        if row.cost is not None:
+            entry_nav = float(row.cost)
+        elif row.units and row.units > 0 and amount is not None:
+            entry_nav = float(amount) / float(row.units)
+        elif row.opened_at:
+            entry_nav = _calc_nav_on_or_before(row.code, row.opened_at.strftime("%Y-%m-%d"))
+
+        daily_profit = None
+        holding_profit = None
+        total_profit = None
+        if amount is not None and daily_change is not None:
+            daily_profit = float(amount) * float(daily_change)
+        if amount is not None and nav is not None and entry_nav:
+            holding_profit = float(amount) * (float(nav) / float(entry_nav) - 1.0)
+            total_profit = holding_profit
+
+        last_event = (
+            db.query(PositionEvent)
+            .filter(PositionEvent.position_id == row.id, PositionEvent.user_id == user.id)
+            .order_by(PositionEvent.created_at.desc())
+            .first()
+        )
+        last_delta = None
+        if last_event and last_event.delta_amount is not None:
+            last_delta = float(last_event.delta_amount)
+
+        last_input = row.updated_at or row.opened_at or row.created_at
+        last_input_date = last_input.strftime("%Y-%m-%d") if last_input else None
+        updated_at = row.updated_at.strftime("%Y-%m-%d %H:%M") if row.updated_at else None
+        updated_today = nav_date == latest_trade_date if nav_date else False
+
+        status = "持有"
+        if not row.is_active or (amount is not None and amount <= 0):
+            status = "已清仓"
+
+        out.append(
+            PositionSummaryOut(
+                id=row.id,
+                code=row.code,
+                name=name,
+                amount=amount,
+                nav=nav,
+                nav_date=nav_date,
+                daily_change=daily_change,
+                daily_profit=daily_profit,
+                holding_profit=holding_profit,
+                total_profit=total_profit,
+                entry_nav=entry_nav,
+                last_input_date=last_input_date,
+                updated_at=updated_at,
+                updated_today=updated_today,
+                last_delta=last_delta,
+                status=status,
+            )
+        )
+    return out

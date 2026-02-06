@@ -1,13 +1,18 @@
 import os
 import re
 import threading
+import json
+import html as html_lib
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 import pandas as pd
+import httpx
 
 from services.modules.akshare import cached_call, has_func
 
-REQUEST_TIMEOUT = 25
+REQUEST_TIMEOUT = 60
 BG_REFRESH_INTERVAL_SEC = int(os.getenv("FUND_NAV_BG_REFRESH_INTERVAL_SEC", "20"))
 BG_REFRESH_ENABLED = os.getenv("FUND_NAV_BG_REFRESH_ENABLED", "false").lower() in (
     "1",
@@ -87,9 +92,95 @@ def get_fund_value_estimation() -> Optional[pd.DataFrame]:
 
     try:
         df = cached_call("fund_value_estimation_em", timeout=REQUEST_TIMEOUT, ttl=30)
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.error(f"get_fund_value_estimation failed: {type(e).__name__}: {str(e)}")
         return None
     return _clean_df(df)
+
+
+def get_all_fund_names() -> Optional[pd.DataFrame]:
+    """Get comprehensive fund list (code + name) from akshare."""
+    if not has_func("fund_name_em"):
+        return None
+
+    try:
+        df = cached_call("fund_name_em", timeout=REQUEST_TIMEOUT, ttl=3600)
+    except Exception as e:
+        import logging
+        logging.error(f"get_all_fund_names failed: {type(e).__name__}: {str(e)}")
+        return None
+    return _clean_df(df)
+
+
+def _parse_trade_calendar(df: pd.DataFrame) -> Optional[pd.Series]:
+    df = _clean_df(df)
+    date_col = None
+    for c in df.columns:
+        if _col_has(c, "交易日", "日期", "date", "trade_date") or c.lower() in ("date", "trade_date"):
+            date_col = c
+            break
+    if date_col is None:
+        return None
+    dates = pd.to_datetime(df[date_col], errors="coerce").dropna()
+    if dates.empty:
+        return None
+    return dates.dt.normalize()
+
+
+def get_trade_calendar(
+    start: str | None = None,
+    end: str | None = None,
+) -> list[str]:
+    candidates = [
+        ("tool_trade_date_hist_sina", None),
+        ("stock_zh_a_trade_date", None),
+    ]
+    series = None
+    for name, kwargs in candidates:
+        if not has_func(name):
+            continue
+        try:
+            df = cached_call(name, kwargs=kwargs, timeout=REQUEST_TIMEOUT, ttl=3600)
+            series = _parse_trade_calendar(df)
+            if series is not None:
+                break
+        except Exception:
+            continue
+
+    if series is None:
+        end_dt = pd.Timestamp(end) if end else pd.Timestamp.now()
+        start_dt = pd.Timestamp(start) if start else end_dt - pd.Timedelta(days=365)
+        dates = pd.date_range(start=start_dt, end=end_dt, freq="B")
+        series = pd.Series(dates.normalize())
+
+    if start:
+        series = series[series >= pd.Timestamp(start)]
+    if end:
+        series = series[series <= pd.Timestamp(end)]
+
+    out = sorted(set(series.dt.strftime("%Y-%m-%d").tolist()))
+    return out
+
+
+def get_latest_trading_date(
+    tz: str = "Asia/Shanghai",
+) -> str:
+    try:
+        now = datetime.now(ZoneInfo(tz))
+    except Exception:
+        now = datetime.now()
+    today = now.date()
+    end = today.strftime("%Y-%m-%d")
+    start = (today - timedelta(days=365)).strftime("%Y-%m-%d")
+    calendar = get_trade_calendar(start=start, end=end)
+    if calendar:
+        return calendar[-1]
+    # Fallback: assume weekdays are trading days.
+    d = today
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
 
 
 def extract_fund_estimate(df: pd.DataFrame, symbol: str) -> Optional[dict]:
@@ -597,10 +688,10 @@ def _spot_series_v2(spot: pd.DataFrame) -> pd.Series:
     return spot.set_index(code_col)[pct_col] / 100.0
 
 
-def estimate_with_holdings(symbol: str, index_ret: float | None) -> tuple[float, float, str]:
+def estimate_with_holdings(symbol: str, index_ret: float | None) -> tuple[float, float, str, bool]:
     holdings = get_fund_holdings(symbol)
     if holdings is None or holdings.empty:
-        return (index_ret or 0.0, 0.0, "index_only")
+        return (index_ret or 0.0, 0.0, "index_only", False)
 
     holdings = parse_latest_quarter(holdings)
 
@@ -612,7 +703,7 @@ def estimate_with_holdings(symbol: str, index_ret: float | None) -> tuple[float,
         if _col_has(c, "?????", "????") or c.lower() in ("weight", "ratio"):
             weight_col = c
     if code_col is None or weight_col is None:
-        return (index_ret or 0.0, 0.0, "index_only")
+        return (index_ret or 0.0, 0.0, "index_only", False)
 
     df = holdings[[code_col, weight_col]].copy()
     df.columns = ["code", "weight"]
@@ -622,12 +713,13 @@ def estimate_with_holdings(symbol: str, index_ret: float | None) -> tuple[float,
 
     total_weight = float(df["weight"].sum())
     if total_weight <= 0:
-        return (index_ret or 0.0, 0.0, "index_only")
+        return (index_ret or 0.0, 0.0, "index_only", False)
 
     etf_spot = get_etf_spot_return_map_v2()
     stock_spot = get_stock_spot_v2()
     stock_ret = _spot_series_v2(stock_spot) if stock_spot is not None else None
     industry_spot = get_industry_spot_pct_change_v2()
+    realtime_used = any([etf_spot is not None, stock_ret is not None, industry_spot is not None])
 
     ret_sum = 0.0
     direct_weight = 0.0
@@ -667,13 +759,13 @@ def estimate_with_holdings(symbol: str, index_ret: float | None) -> tuple[float,
         source = "holdings+industry+index"
 
     coverage = direct_weight / (total_weight / 100.0) if total_weight > 0 else 0.0
-    return (ret_sum, coverage, source)
+    return (ret_sum, coverage, source, realtime_used)
 def estimate_with_industry_allocation(
     symbol: str, index_ret: float | None
-) -> tuple[float, float, str]:
+) -> tuple[float, float, str, bool]:
     alloc = get_fund_industry_allocation(symbol)
     if alloc is None or alloc.empty:
-        return (index_ret or 0.0, 0.0, "index_only")
+        return (index_ret or 0.0, 0.0, "index_only", False)
 
     alloc = parse_latest_date(alloc)
 
@@ -685,7 +777,7 @@ def estimate_with_industry_allocation(
         if _col_has(c, "?????", "????") or c.lower() in ("weight", "ratio"):
             weight_col = c
     if industry_col is None or weight_col is None:
-        return (index_ret or 0.0, 0.0, "index_only")
+        return (index_ret or 0.0, 0.0, "index_only", False)
 
     df = alloc[[industry_col, weight_col]].copy()
     df.columns = ["industry", "weight"]
@@ -695,9 +787,10 @@ def estimate_with_industry_allocation(
 
     total_weight = float(df["weight"].sum())
     if total_weight <= 0:
-        return (index_ret or 0.0, 0.0, "index_only")
+        return (index_ret or 0.0, 0.0, "index_only", False)
 
     industry_spot = get_industry_spot_pct_change_v2()
+    realtime_used = industry_spot is not None
     source_base = "industry"
     if industry_spot is None:
         ret_map = {}
@@ -706,7 +799,7 @@ def estimate_with_industry_allocation(
             if ret is not None:
                 ret_map[str(industry)] = ret
         if not ret_map:
-            return (index_ret or 0.0, 0.0, "index_only")
+            return (index_ret or 0.0, 0.0, "index_only", False)
         industry_spot = pd.Series(ret_map)
         source_base = "industry_daily"
 
@@ -731,7 +824,7 @@ def estimate_with_industry_allocation(
         source = f"{source_base}+index"
 
     coverage = covered / (total_weight / 100.0) if total_weight > 0 else 0.0
-    return (ret_sum, coverage, source)
+    return (ret_sum, coverage, source, realtime_used)
 def get_fund_holdings(symbol: str) -> Optional[pd.DataFrame]:
     if not has_func("fund_portfolio_hold_em"):
         return None
@@ -835,18 +928,197 @@ def _eastmoney_estimate(
     return (None, None, None)
 
 
+
+
+def _http_get_text(url: str, params: dict | None = None, headers: dict | None = None) -> str | None:
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+            resp = client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            return resp.text
+    except Exception:
+        return None
+
+
+def _tiantian_estimate(code: str) -> dict | None:
+    url = f"https://fundgz.1234567.com.cn/js/{code}.js"
+    text = _http_get_text(url, headers={"Referer": "https://fund.eastmoney.com/"})
+    if not text:
+        return None
+    m = re.search(r"jsonpgz\((\{.*?\})\)", text)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(1))
+    except Exception:
+        return None
+    try:
+        est_nav = float(data.get("gsz")) if data.get("gsz") else None
+        est_ret = float(data.get("gszzl")) / 100.0 if data.get("gszzl") else None
+    except Exception:
+        return None
+    if est_nav is None and est_ret is None:
+        return None
+    return {
+        "est_nav": est_nav,
+        "est_return": est_ret,
+        "time": data.get("gztime"),
+    }
+
+
+def _parse_eastmoney_holdings_html(html_text: str) -> list[tuple[str, float]]:
+    rows = re.findall(r"<tr>.*?</tr>", html_text, flags=re.S)
+    out: list[tuple[str, float]] = []
+    for row in rows:
+        code_m = re.search(r">(\d{6})<", row)
+        if not code_m:
+            continue
+        pct_m = re.findall(r">\s*([0-9.]+)\s*%\s*<", row)
+        if not pct_m:
+            continue
+        try:
+            weight = float(pct_m[-1])
+        except Exception:
+            continue
+        out.append((code_m.group(1), weight))
+    return out
+
+
+def _eastmoney_holdings(code: str) -> list[tuple[str, float]] | None:
+    try:
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    except Exception:
+        now = datetime.now()
+    year = now.year
+    month = now.month
+    url = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
+    params = {
+        "type": "jjcc",
+        "code": code,
+        "topline": "10",
+        "year": str(year),
+        "month": str(month),
+    }
+    text = _http_get_text(url, params=params, headers={"Referer": "https://fundf10.eastmoney.com/"})
+    if not text:
+        return None
+    m = re.search(r'content:"(.*?)"', text, flags=re.S)
+    if not m:
+        return None
+    raw = m.group(1)
+    try:
+        unescaped = bytes(raw, "utf-8").decode("unicode_escape")
+    except Exception:
+        unescaped = raw
+    unescaped = unescaped.replace("\\/", "/")
+    unescaped = html_lib.unescape(unescaped)
+    holdings = _parse_eastmoney_holdings_html(unescaped)
+    return holdings or None
+
+
+def _normalize_code(code: str) -> str:
+    c = code.strip().upper()
+    if c.startswith("SH") or c.startswith("SZ"):
+        c = c[2:]
+    if c.endswith(".SH") or c.endswith(".SZ"):
+        c = c[:-3]
+    return c.zfill(6)
+
+
+def _tencent_quote_returns(codes: list[str]) -> dict[str, float]:
+    if not codes:
+        return {}
+    symbols = []
+    for c in codes:
+        base = _normalize_code(c)
+        prefix = "sh" if base.startswith("6") else "sz"
+        symbols.append(f"{prefix}{base}")
+    url = "https://qt.gtimg.cn/q=" + ",".join(symbols)
+    text = _http_get_text(url, headers={"Referer": "https://qt.qq.com/"})
+    if not text:
+        return {}
+    out: dict[str, float] = {}
+    for line in text.split(";"):
+        if not line.strip():
+            continue
+        m = re.search(r'v_([a-zA-Z0-9]+)="(.*)"', line)
+        if not m:
+            continue
+        data = m.group(2).split("~")
+        if len(data) < 5:
+            continue
+        try:
+            price = float(data[3])
+            prev = float(data[4])
+            if prev <= 0:
+                continue
+            ret = (price - prev) / prev
+        except Exception:
+            continue
+        code6 = _normalize_code(data[2]) if len(data) > 2 else _normalize_code(m.group(1))
+        out[code6] = ret
+    return out
+
+
+def _estimate_plan_b(code: str, last_nav: float | None) -> dict | None:
+    holdings = _eastmoney_holdings(code)
+    if holdings:
+        codes = [c for c, _ in holdings]
+        quote_map = _tencent_quote_returns(codes)
+        ret_sum = 0.0
+        covered = 0.0
+        total_weight = 0.0
+        for c, w in holdings:
+            total_weight += w
+            ret = quote_map.get(_normalize_code(c))
+            if ret is None:
+                continue
+            weight = w / 100.0
+            ret_sum += weight * ret
+            covered += weight
+        if total_weight > 0 and covered > 0:
+            coverage = covered / (total_weight / 100.0)
+            if coverage >= 0.4:
+                est_nav = last_nav * (1.0 + ret_sum) if last_nav is not None else None
+                return {
+                    "est_return": ret_sum,
+                    "est_nav": est_nav,
+                    "source": "planb_holdings_tencent",
+                    "coverage": coverage,
+                    "is_realtime": True,
+                }
+    tt = _tiantian_estimate(code)
+    if tt is not None:
+        est_nav = tt.get("est_nav")
+        est_ret = tt.get("est_return")
+        if est_ret is None and est_nav is not None and last_nav:
+            est_ret = est_nav / last_nav - 1.0
+        return {
+            "est_return": est_ret,
+            "est_nav": est_nav,
+            "source": "planb_tiantian",
+            "coverage": None,
+            "is_realtime": True,
+        }
+    return None
+
 def _model_estimate(
-    code: str, last_nav: float | None, index_ret: float | None
-) -> tuple[float | None, float | None, str | None, float | None]:
-    est_ret, coverage, source = estimate_with_holdings(code, index_ret)
+    code: str,
+    last_nav: float | None,
+    index_ret: float | None,
+    index_realtime: bool,
+) -> tuple[float | None, float | None, str | None, float | None, bool]:
+    est_ret, coverage, source, realtime_used = estimate_with_holdings(code, index_ret)
     if coverage < 0.6:
-        ind_ret, ind_cov, ind_src = estimate_with_industry_allocation(code, index_ret)
-        # 估值公式
+        ind_ret, ind_cov, ind_src, ind_realtime = estimate_with_industry_allocation(code, index_ret)
+        # 估值公开
         est_ret = est_ret * coverage + ind_ret * (1.0 - coverage)
         source = f"{source}+{ind_src}"
         coverage = max(coverage, ind_cov)
+        realtime_used = realtime_used or ind_realtime
+    realtime_used = realtime_used or index_realtime
     est_nav = last_nav * (1.0 + est_ret) if last_nav is not None else None
-    return (est_ret, est_nav, source, coverage)
+    return (est_ret, est_nav, source, coverage, realtime_used)
 
 
 def _infer_index_code_from_name(name: str | None) -> str | None:
@@ -861,6 +1133,12 @@ def _infer_index_code_from_name(name: str | None) -> str | None:
         return "000852"
     if "中证A500" in name or "A500" in upper:
         return "000510"
+    if "上证50" in name or "SSE50" in upper:
+        return "000016"
+    if "上证180" in name or "SSE180" in upper:
+        return "000010"
+    if "深证成指" in name or "深证成份" in name or "SZCZ" in upper or "SZCI" in upper:
+        return "399001"
     if "创业板" in name or "CYB" in upper:
         return "399006"
     if "科创50" in name or "STAR50" in upper:
@@ -889,36 +1167,60 @@ def _lookup_index_ret(index_spot: pd.Series, index_code: str) -> float | None:
 
 
 def estimate_fund(
-    code: str, index_code: str | None = None, source: str = "model"
+    code: str,
+    index_code: str | None = None,
+    source: str = "model",
+    name_hint: str | None = None,
 ) -> dict:
     fund_df = get_fund_nav_daily(code)
     last_nav = float(fund_df["nav"].iloc[-1]) if not fund_df.empty else None
 
-    est_df = None
+    est_df = get_fund_value_estimation()
     fund_name = None
-    if source != "model":
-        est_df = get_fund_value_estimation()
-        if est_df is not None:
+    if est_df is not None:
+        code_col = None
+        name_col = None
+        for c in est_df.columns:
+            if _col_has(c, "基金代码", "代码") or c.lower() in ("code",):
+                code_col = c
+            if _col_has(c, "基金名称", "名称") or c.lower() in ("name",):
+                name_col = c
+        if code_col is not None and name_col is not None:
+            row = est_df[est_df[code_col].astype(str) == str(code)]
+            if not row.empty:
+                fund_name = str(row.iloc[0][name_col])
+
+    if fund_name is None:
+        name_df = get_all_fund_names()
+        if name_df is not None:
             code_col = None
             name_col = None
-            for c in est_df.columns:
+            for c in name_df.columns:
                 if _col_has(c, "基金代码", "代码") or c.lower() in ("code",):
                     code_col = c
                 if _col_has(c, "基金名称", "名称") or c.lower() in ("name",):
                     name_col = c
             if code_col is not None and name_col is not None:
-                row = est_df[est_df[code_col].astype(str) == str(code)]
+                row = name_df[name_df[code_col].astype(str) == str(code)]
                 if not row.empty:
                     fund_name = str(row.iloc[0][name_col])
 
-    if index_code is None and fund_name is not None:
-        index_code = _infer_index_code_from_name(fund_name)
+    if fund_name is None and name_hint:
+        fund_name = name_hint
+
+    if index_code is None:
+        index_code = _infer_index_code_from_name(fund_name or name_hint)
 
     index_ret = None
+    index_realtime = False
     if index_code:
         index_spot = get_index_spot_pct_change_v2()
+        if index_spot is None:
+            index_spot = get_index_spot_pct_change()
         if index_spot is not None:
             index_ret = _lookup_index_ret(index_spot, index_code)
+            if index_ret is not None:
+                index_realtime = True
         if index_ret is None:
             index_ret = _get_index_daily_return(index_code)
 
@@ -929,7 +1231,7 @@ def estimate_fund(
             index_ret = None
 
     em_ret, em_nav, em_source = _eastmoney_estimate(est_df, code, last_nav)
-    model_ret, model_nav, model_source, model_cov = _model_estimate(code, last_nav, index_ret)
+    model_ret, model_nav, model_source, model_cov, model_realtime = _model_estimate(code, last_nav, index_ret, index_realtime)
 
     preferred_source = source
     if source == "auto":
@@ -938,15 +1240,45 @@ def estimate_fund(
         else:
             preferred_source = "model"
 
-    if preferred_source == "eastmoney":
+    if preferred_source == "planb":
+        planb = _estimate_plan_b(code, last_nav)
+        if planb and planb.get("is_realtime"):
+            est_ret = planb.get("est_return")
+            est_nav = planb.get("est_nav")
+            final_source = planb.get("source")
+            coverage = planb.get("coverage")
+            is_realtime = True
+            fallback_used = True
+            fallback_source = planb.get("source")
+        else:
+            est_ret, est_nav, final_source, coverage = model_ret, model_nav, model_source, model_cov
+            is_realtime = bool(model_realtime)
+    elif preferred_source == "eastmoney":
         est_ret, est_nav, final_source, coverage = em_ret, em_nav, em_source, 1.0
+        is_realtime = em_ret is not None
     elif preferred_source == "model":
         est_ret, est_nav, final_source, coverage = model_ret, model_nav, model_source, model_cov
+        is_realtime = bool(model_realtime)
     else:
         if em_ret is not None:
             est_ret, est_nav, final_source, coverage = em_ret, em_nav, em_source, 1.0
+            is_realtime = True
         else:
             est_ret, est_nav, final_source, coverage = model_ret, model_nav, model_source, model_cov
+            is_realtime = bool(model_realtime)
+
+    fallback_used = False
+    fallback_source = None
+    if not is_realtime:
+        planb = _estimate_plan_b(code, last_nav)
+        if planb and planb.get("is_realtime"):
+            est_ret = planb.get("est_return")
+            est_nav = planb.get("est_nav")
+            final_source = planb.get("source")
+            coverage = planb.get("coverage")
+            is_realtime = True
+            fallback_used = True
+            fallback_source = planb.get("source")
 
     return {
         "code": code,
@@ -964,4 +1296,7 @@ def estimate_fund(
         "est_nav_model": model_nav,
         "source_model": model_source,
         "coverage_model": model_cov,
+        "is_realtime": is_realtime,
+        "fallback_used": fallback_used,
+        "fallback_source": fallback_source,
     }

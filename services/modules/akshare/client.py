@@ -8,7 +8,7 @@ import akshare as ak
 
 from .cache import TTLCache
 
-REQUEST_TIMEOUT = 25
+REQUEST_TIMEOUT = 60
 DEFAULT_TTL_SEC = int(os.getenv("AKSHARE_CACHE_TTL_SEC", "30"))
 
 _cache = TTLCache(DEFAULT_TTL_SEC)
